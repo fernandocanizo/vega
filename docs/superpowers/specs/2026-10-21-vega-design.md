@@ -76,10 +76,11 @@ Layout: a status bar on top, a search input, a results list on the left, and a d
 - Status bar: server host, "schema fetched <age> ago", and the refresh key hint.
   - Neutral colour under 24 hours.
   - Bold red over 24 hours.
-  - A "no schema yet" state before the first fetch.
   - A "refreshing…" state during refresh. The UI stays responsive (refresh runs off the UI thread).
+  - A failed refresh shows its error in the bar and keeps the old schema.
+  - There is no "no schema yet" state: with no cache, the first fetch happens before the TUI opens, and a failure exits with an error message.
 - Search: typing filters results by partial name.
-- Navigation: arrow keys move through the list, Enter drills into the selected item. In a type, Enter on a field jumps to its return type. Backspace goes back through the history. `q` or Esc quits.
+- Navigation: arrow keys move through the list, Enter drills into the selected item. In a type, Enter on a field jumps to its return type; in a field, Enter on its return type or an argument jumps to that type. Backspace or Esc goes back through the history (and from the first detail back to the search list). Esc in the search list, `q` in a detail view, or Ctrl-C anywhere quits. (`q` cannot quit from the search box because it is a typeable letter.)
 - Detail pane: signature, description (including permission notes such as "Requires USER_READ"), arguments, and return type fields.
 
 ## XDG layout
@@ -87,8 +88,8 @@ Layout: a status bar on top, a search input, a results list on the left, and a d
 - Cache: `$XDG_CACHE_HOME/vega/`.
 - Config: `$XDG_CONFIG_HOME/vega/config.toml` (optional defaults in phase 1; profiles later).
 - Data: `$XDG_DATA_HOME/vega/` (reserved for saved queries).
-- Install: `cargo install --path .` to `~/.cargo/bin`; a `just install` recipe may copy the binary to `~/.local/bin`.
-- Path crate: `etcetera` or `directories`. Decide at plan time by checking that it yields XDG paths on Linux.
+- Install: `~/.local/bin` (XDG basedir spec 0.8 location for user executables; fixed path, no override variable). A `just install` recipe builds in release mode and copies the binary there (no `cargo install`, which would also write metadata files into `~/.local`).
+- Path resolution: a small in-house function (absolute `$XDG_*` value, else `$HOME` fallback; relative or empty values are ignored per the XDG spec). No path crate.
 
 ## Tooling and automation
 
@@ -114,6 +115,5 @@ Layout: a status bar on top, a search input, a results list on the left, and a d
 
 ## Open items for the implementation plan
 
-- Choose `etcetera` vs `directories` for XDG paths.
 - Confirm the Nexus server's introspection response works with the fixture shape (probe with curl during development).
 - Define the search matching rules (case-insensitive substring in v1; ranking if needed).
