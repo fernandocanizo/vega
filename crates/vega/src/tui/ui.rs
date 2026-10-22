@@ -4,11 +4,14 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
-use crate::tui::app::{App, StatusLevel};
+use crate::tui::app::{App, StatusLevel, HELP_KEYS};
+
+/// Version shown in the help modal title.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn draw(frame: &mut Frame, app: &App, now: u64) {
     let rows = Layout::vertical([
@@ -24,6 +27,62 @@ pub fn draw(frame: &mut Frame, app: &App, now: u64) {
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(rows[2]);
     draw_hits(frame, columns[0], app);
     draw_detail(frame, columns[1], app);
+    if app.help_open {
+        draw_help(frame, frame.area());
+    }
+}
+
+fn draw_help(frame: &mut Frame, area: Rect) {
+    let key_width = HELP_KEYS
+        .iter()
+        .map(|(keys, _)| keys.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut lines = vec![Line::raw("")];
+    lines.extend(HELP_KEYS.iter().map(|(keys, description)| {
+        Line::from(vec![
+            Span::styled(
+                format!("{keys:<key_width$}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("  {description}")),
+        ])
+    }));
+    lines.push(Line::styled(
+        "Esc to close",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let title = format!("Vega - {VERSION}");
+    let content_width = lines
+        .iter()
+        .map(Line::width)
+        .chain(std::iter::once(title.chars().count()))
+        .max()
+        .unwrap_or(0);
+    // Borders (2) plus one column of padding on each side.
+    let width = u16::try_from(content_width + 4).unwrap_or(u16::MAX);
+    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    let popup = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    let padded = Rect::new(
+        inner.x.saturating_add(1),
+        inner.y,
+        inner.width.saturating_sub(2),
+        inner.height,
+    );
+    frame.render_widget(Paragraph::new(Text::from(lines)), padded);
 }
 
 fn draw_status(frame: &mut Frame, area: Rect, app: &App, now: u64) {
@@ -42,7 +101,7 @@ fn draw_search(frame: &mut Frame, area: Rect, app: &App) {
     let title = if app.detail.is_some() {
         "Search"
     } else {
-        "Search (type to filter · Enter/→ open · Esc quit)"
+        "Search (type to filter · Enter/→ open · Esc quit · ? help)"
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     frame.render_widget(Paragraph::new(app.query.as_str()).block(block), area);
@@ -196,6 +255,33 @@ mod tests {
         assert!(text.contains("Mutation.userCreate"));
         // Preview of the first hit (Query.userRead) in the detail pane.
         assert!(text.contains("Requires USER_READ"));
+    }
+
+    #[test]
+    fn help_modal_shows_the_version_and_every_key() {
+        let mut app = app();
+        app.help_open = true;
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains(&format!("Vega - {}", env!("CARGO_PKG_VERSION"))));
+        for (keys, _) in HELP_KEYS {
+            assert!(text.contains(keys), "missing {keys}");
+        }
+        assert!(text.contains("Esc to close"));
+    }
+
+    #[test]
+    fn help_modal_is_hidden_by_default() {
+        assert!(!screen(&render(&app(), 1_000)).contains("Vega - "));
+    }
+
+    #[test]
+    fn help_modal_does_not_panic_on_tiny_terminals() {
+        let mut app = app();
+        app.help_open = true;
+        for (w, h) in [(20, 5), (1, 1), (0, 0), (3, 40)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|frame| draw(frame, &app, 1_000)).unwrap();
+        }
     }
 
     #[test]
