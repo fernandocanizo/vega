@@ -7,7 +7,7 @@ use vega_core::cache::{format_age, is_stale};
 use vega_core::querygen::{self, GenerateError, GeneratedQuery};
 use vega_core::schema::Schema;
 use vega_core::search::{self, Hit};
-use vega_core::selection::{self, NodeKind, Path, Row, Seg, Selection, TreeRoot};
+use vega_core::selection::{self, Path, Row, Seg, Selection, TreeRoot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -277,10 +277,11 @@ impl App {
         ))
     }
 
+    /// True when the leaf at `path` is selected, or the optional argument at it is opted in.
     pub fn is_selected(&self, path: &[Seg]) -> bool {
-        self.design
-            .as_ref()
-            .is_some_and(|design| design.selection.contains(path))
+        self.design.as_ref().is_some_and(|design| {
+            design.selection.contains(path) || design.selection.arg_included(path)
+        })
     }
 
     fn move_cursor(&mut self, delta: isize) {
@@ -298,7 +299,7 @@ impl App {
         let Some(row) = rows.get(design.cursor) else {
             return;
         };
-        if row.node.kind != NodeKind::Composite {
+        if !row.node.expandable() {
             return;
         }
         if !row.expanded {
@@ -1032,6 +1033,7 @@ mod tests {
             press(&mut app, KeyCode::Down); // posts(first: Int!)
         }
         press(&mut app, KeyCode::Right); // expand posts
+        press(&mut app, KeyCode::Down); // args
         press(&mut app, KeyCode::Down); // id
         press(&mut app, KeyCode::Char(' '));
         let query = app.generated_query().unwrap().unwrap();
