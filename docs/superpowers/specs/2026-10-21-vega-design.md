@@ -42,7 +42,7 @@ Motivations:
 ## Configuration and credentials
 
 - Precedence: CLI flags, then environment variables, then `config.toml`.
-- Environment variables: `GRAPHQL_URI` (endpoint) and `GRAPHQL_KEY` (API key).
+- Environment variables: `VEGA_GRAPHQL_URI` (endpoint) and `VEGA_GRAPHQL_KEY` (API key).
 - The API key is sent as the `X-API-Key` header on a `POST` with `Content-Type: application/json`, matching `example.curl.query.sh`.
 - The API key is never written to disk, the cache, or logs.
 
@@ -80,7 +80,8 @@ Layout: a status bar on top, a search input, a results list on the left, and a d
   - A failed refresh shows its error in the bar and keeps the old schema.
   - There is no "no schema yet" state: with no cache, the first fetch happens before the TUI opens, and a failure exits with an error message.
 - Search: typing filters results by partial name.
-- Navigation: arrow keys move through the list, Enter drills into the selected item. In a type, Enter on a field jumps to its return type; in a field, Enter on its return type or an argument jumps to that type. Backspace or Esc goes back through the history (and from the first detail back to the search list). Esc in the search list, `q` in a detail view, or Ctrl-C anywhere quits. (`q` cannot quit from the search box because it is a typeable letter.)
+- Navigation: arrow keys move through the list, Enter drills into the selected item. In a type, Enter on a field jumps to its return type; in a field, Enter on its return type or an argument jumps to that type. Backspace or Esc goes back through the history (and from the first detail back to the search list). Right arrow is an alias of Enter and Left arrow an alias of Backspace in a detail view, so the whole UI can be driven with the arrow keys alone; Left does nothing in the search list. Esc in the search list, `q` in a detail view, or Ctrl-C anywhere quits. (`q` and `h` cannot act as hotkeys in the search box because they are typeable letters.)
+- Help: `?` or F1 (any mode) and `h` (detail view only) open a modal listing every hotkey with its aliases; the modal title is `Vega - <version>`. Esc, `h`, `?` or F1 close it. While it is open, other keys are ignored except Ctrl-C and Ctrl-R. The version string currently comes from the crate version.
 - Detail pane: signature, description (including permission notes such as "Requires USER_READ"), arguments, and return type fields.
 
 ## XDG layout
