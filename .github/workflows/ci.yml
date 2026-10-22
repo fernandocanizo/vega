@@ -26,7 +26,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
 
       # Same command as the pre-commit hook: format check, clippy, tests.
       - name: Run checks
