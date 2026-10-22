@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Vega is a terminal GraphQL client written in Rust. It introspects a server, caches the schema, and lets you search and navigate operations and types in a TUI or through CLI flags. It is a general GraphQL tool; the Nexus API (used by the Rocky project) is the first target.
+Vega is a terminal GraphQL client written in Rust. It introspects a server, caches the schema, and lets you search and navigate operations and types in a TUI or through CLI flags.
 
 Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/superpowers/plans/`.
 
@@ -42,7 +42,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 
 ## Rules that must not be broken
 
-- The API key comes only from the `GRAPHQL_KEY` environment variable. Never write it to disk, the cache, logs or error messages, and never add a CLI flag for it.
+- The API key comes only from the `VEGA_GRAPHQL_KEY` environment variable. Never write it to disk, the cache, logs or error messages, and never add a CLI flag for it.
 - Config and cache paths follow XDG (`$XDG_CONFIG_HOME/vega`, `$XDG_CACHE_HOME/vega`, `$XDG_DATA_HOME/vega`). Precedence: CLI flag, then environment, then `config.toml`.
 - CLI commands print warnings to stderr only. Stdout (including `--json`) must stay machine-readable.
 - A failed refresh must keep the existing cache.
