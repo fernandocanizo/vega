@@ -1,0 +1,86 @@
+{
+  "data": {
+    "__schema": {
+      "queryType": { "name": "QueryType" },
+      "mutationType": { "name": "MutationType" },
+      "subscriptionType": null,
+      "types": [
+        {
+          "kind": "OBJECT", "name": "QueryType", "description": null,
+          "fields": [
+            {
+              "name": "userRead",
+              "description": "Fetch one user.\n\nRequires USER_READ",
+              "args": [
+                { "name": "id", "description": "The user id.", "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } }, "defaultValue": null }
+              ],
+              "type": { "kind": "OBJECT", "name": "User", "ofType": null },
+              "isDeprecated": false, "deprecationReason": null
+            },
+            {
+              "name": "userSearch",
+              "description": "Search users by name.",
+              "args": [
+                { "name": "term", "description": null, "type": { "kind": "SCALAR", "name": "String", "ofType": null }, "defaultValue": null }
+              ],
+              "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "LIST", "name": null, "ofType": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "OBJECT", "name": "User", "ofType": null } } } },
+              "isDeprecated": false, "deprecationReason": null
+            }
+          ],
+          "inputFields": null, "enumValues": null, "possibleTypes": null
+        },
+        {
+          "kind": "OBJECT", "name": "MutationType", "description": null,
+          "fields": [
+            {
+              "name": "userCreate",
+              "description": "Create a user.\n\nRequires USER_WRITE",
+              "args": [
+                { "name": "input", "description": null, "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "INPUT_OBJECT", "name": "UserInput", "ofType": null } }, "defaultValue": null }
+              ],
+              "type": { "kind": "OBJECT", "name": "User", "ofType": null },
+              "isDeprecated": false, "deprecationReason": null
+            }
+          ],
+          "inputFields": null, "enumValues": null, "possibleTypes": null
+        },
+        {
+          "kind": "OBJECT", "name": "User", "description": "A person with an account.",
+          "fields": [
+            { "name": "id", "description": null, "args": [], "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "name", "description": null, "args": [], "type": { "kind": "SCALAR", "name": "String", "ofType": null }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "role", "description": "Access role.", "args": [], "type": { "kind": "ENUM", "name": "Role", "ofType": null }, "isDeprecated": false, "deprecationReason": null }
+          ],
+          "inputFields": null, "enumValues": null, "possibleTypes": null
+        },
+        {
+          "kind": "ENUM", "name": "Role", "description": "What a user may do.",
+          "fields": null, "inputFields": null,
+          "enumValues": [
+            { "name": "ADMIN", "description": "Full access.", "isDeprecated": false, "deprecationReason": null },
+            { "name": "VIEWER", "description": "Read-only.", "isDeprecated": false, "deprecationReason": null }
+          ],
+          "possibleTypes": null
+        },
+        {
+          "kind": "INPUT_OBJECT", "name": "UserInput", "description": "Fields for creating a user.",
+          "fields": null,
+          "inputFields": [
+            { "name": "name", "description": null, "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "String", "ofType": null } }, "defaultValue": null },
+            { "name": "role", "description": null, "type": { "kind": "ENUM", "name": "Role", "ofType": null }, "defaultValue": null }
+          ],
+          "enumValues": null, "possibleTypes": null
+        },
+        {
+          "kind": "UNION", "name": "SearchResult", "description": "Anything a search can return.",
+          "fields": null, "inputFields": null, "enumValues": null,
+          "possibleTypes": [ { "kind": "OBJECT", "name": "User", "ofType": null } ]
+        },
+        { "kind": "SCALAR", "name": "ID", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null },
+        { "kind": "SCALAR", "name": "String", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null },
+        { "kind": "SCALAR", "name": "Boolean", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null },
+        { "kind": "OBJECT", "name": "__Type", "description": "Introspection type.", "fields": [], "inputFields": null, "enumValues": null, "possibleTypes": null }
+      ]
+    }
+  }
+}
