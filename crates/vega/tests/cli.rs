@@ -56,6 +56,7 @@ fn search_prints_matching_operations_and_types() {
 fn search_json_is_valid_and_ranked() {
     let cache = seeded_cache(60);
     let out = vega(&cache, &["--search", "user", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
     let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     assert_eq!(json.as_array().unwrap().len(), 5);
     assert_eq!(json[0]["path"], "Query.userRead");
@@ -123,4 +124,22 @@ fn missing_endpoint_explains_how_to_set_one() {
         .unwrap();
     assert!(!out.status.success());
     assert!(stderr(&out).contains("--uri"));
+}
+
+#[test]
+fn failed_refresh_reports_an_error_and_keeps_the_cache() {
+    let cache = seeded_cache(60);
+    let path = cache_path(&cache.path().join("vega"), URI);
+    let before = std::fs::read(&path).unwrap();
+    let out = vega(&cache, &["--refresh", "--search", "x"]);
+    assert!(!out.status.success());
+    assert!(!stderr(&out).trim().is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn cached_run_without_refresh_does_not_touch_the_network() {
+    let cache = seeded_cache(60);
+    let out = vega(&cache, &["--search", "x"]);
+    assert!(out.status.success(), "{}", stderr(&out));
 }
