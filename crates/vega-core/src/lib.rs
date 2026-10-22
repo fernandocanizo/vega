@@ -4,6 +4,7 @@
 pub mod describe;
 pub mod schema;
 pub mod search;
+pub mod xdg;
 
 #[cfg(test)]
 mod testutil;
