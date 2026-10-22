@@ -143,3 +143,13 @@ fn cached_run_without_refresh_does_not_touch_the_network() {
     let out = vega(&cache, &["--search", "x"]);
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+#[test]
+fn broken_config_file_is_ignored_when_an_endpoint_is_given() {
+    let cache = seeded_cache(60);
+    let config_dir = cache.path().join("config").join("vega");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), "uri = [not toml").unwrap();
+    let out = vega(&cache, &["--search", "user"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
