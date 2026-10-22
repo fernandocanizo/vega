@@ -3,7 +3,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::thread;
 
-use vega_core::client::{fetch_introspection, ClientError};
+use vega_core::client::{execute, fetch_introspection, operation_body, ClientError};
 
 const FIXTURE: &str = include_str!("fixtures/introspection.json");
 
@@ -106,4 +106,62 @@ fn server_error_bodies_do_not_leak_the_api_key() {
         }
         other => panic!("unexpected error: {other}"),
     }
+}
+
+fn me_body() -> serde_json::Value {
+    let variables = serde_json::from_str(r#"{"id":"1"}"#).unwrap();
+    operation_body("Me", "query Me { me { id } }", &variables)
+}
+
+#[test]
+fn execute_posts_the_operation_with_its_variables_and_the_key() {
+    let (uri, rx) = serve_once("200 OK", r#"{"data":{"me":null}}"#.to_string());
+    let response = execute(&uri, Some("secret"), &me_body()).unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, r#"{"data":{"me":null}}"#);
+
+    let request = rx.recv().unwrap();
+    let lower = request.to_lowercase();
+    assert!(lower.starts_with("post /graphql"));
+    assert!(lower.contains("x-api-key: secret"));
+    assert!(request.contains(r#""operationName":"Me""#));
+    assert!(request.contains(r#""variables":{"id":"1"}"#));
+    assert!(request.contains("query Me { me { id } }"));
+}
+
+#[test]
+fn execute_sends_no_key_header_without_a_key() {
+    let (uri, rx) = serve_once("200 OK", "{}".to_string());
+    execute(&uri, None, &me_body()).unwrap();
+    assert!(!rx.recv().unwrap().to_lowercase().contains("x-api-key"));
+}
+
+#[test]
+fn execute_returns_any_http_status_as_a_response() {
+    let (uri, _rx) = serve_once("500 Internal Server Error", "boom".to_string());
+    let response = execute(&uri, None, &me_body()).unwrap();
+    assert_eq!(response.status, 500);
+    assert_eq!(response.body, "boom");
+}
+
+#[test]
+fn execute_returns_graphql_errors_as_a_normal_response() {
+    let body = r#"{"data":null,"errors":[{"message":"nope"}]}"#;
+    let (uri, _rx) = serve_once("200 OK", body.to_string());
+    let response = execute(&uri, None, &me_body()).unwrap();
+    assert_eq!(response.body, body);
+}
+
+#[test]
+fn execute_masks_the_api_key_in_the_body() {
+    let (uri, _rx) = serve_once("200 OK", "echo secret-key!".to_string());
+    let response = execute(&uri, Some("secret-key"), &me_body()).unwrap();
+    assert!(response.body.contains("***"), "{}", response.body);
+    assert!(!response.body.contains("secret-key"), "{}", response.body);
+}
+
+#[test]
+fn execute_reports_connection_failures() {
+    let err = execute("http://127.0.0.1:9/graphql", None, &me_body()).unwrap_err();
+    assert!(matches!(err, ClientError::Http(_)));
 }

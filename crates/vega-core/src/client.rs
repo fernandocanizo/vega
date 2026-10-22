@@ -1,8 +1,8 @@
 //! Fetches the schema through a standard GraphQL introspection query.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::schema::IntrospectionResponse;
 
@@ -81,37 +81,90 @@ pub fn parse_response(body: &str) -> Result<IntrospectionResponse, ClientError> 
     serde_json::from_value(value).map_err(ClientError::InvalidJson)
 }
 
+/// What came back from running an operation. Any HTTP status counts as a response; only
+/// failing to get one at all is an error (see `execute`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Response {
+    pub status: u16,
+    pub elapsed: Duration,
+    /// The body as received, with the API key (if the server echoed it) masked.
+    pub body: String,
+}
+
+/// The POST body that runs an operation.
+pub fn operation_body(operation_name: &str, query: &str, variables: &Map<String, Value>) -> Value {
+    json!({ "query": query, "variables": variables, "operationName": operation_name })
+}
+
+/// Replaces every occurrence of the API key with `***`.
+fn mask_key(text: String, api_key: Option<&str>) -> String {
+    match api_key.filter(|key| !key.is_empty()) {
+        Some(key) => text.replace(key, "***"),
+        None => text,
+    }
+}
+
+/// POSTs `body` as JSON and returns the HTTP status, the response text and how long the
+/// round trip took.
+fn post(
+    uri: &str,
+    api_key: Option<&str>,
+    body: &Value,
+) -> Result<(u16, String, Duration), reqwest::Error> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?;
+    let mut request = client.post(uri).json(body);
+    if let Some(key) = api_key {
+        request = request.header("X-API-Key", key);
+    }
+    let started = Instant::now();
+    let response = request.send()?;
+    let status = response.status().as_u16();
+    let text = response.text()?;
+    Ok((status, text, started.elapsed()))
+}
+
+/// Runs an operation. Any HTTP status is an `Ok` response; connection failures, timeouts
+/// and unreadable bodies are errors.
+pub fn execute(uri: &str, api_key: Option<&str>, body: &Value) -> Result<Response, ClientError> {
+    let (status, text, elapsed) = post(uri, api_key, body)?;
+    Ok(Response {
+        status,
+        elapsed,
+        body: mask_key(text, api_key),
+    })
+}
+
 pub fn fetch_introspection(
     uri: &str,
     api_key: Option<&str>,
 ) -> Result<IntrospectionResponse, ClientError> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()?;
-    let mut request = client.post(uri).json(&request_body());
-    if let Some(key) = api_key {
-        request = request.header("X-API-Key", key);
-    }
-    let response = request.send()?;
-    let status = response.status();
-    let body = response.text()?;
-    if !status.is_success() {
-        let mut body: String = body.chars().take(300).collect();
-        if let Some(key) = api_key.filter(|k| !k.is_empty()) {
-            body = body.replace(key, "***");
-        }
+    let (status, text, _elapsed) = post(uri, api_key, &request_body())?;
+    if !(200..300).contains(&status) {
+        let body: String = text.chars().take(300).collect();
         return Err(ClientError::Status {
-            status: status.as_u16(),
-            body,
+            status,
+            body: mask_key(body, api_key),
         });
     }
-    parse_response(&body)
+    parse_response(&text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::FIXTURE;
+
+    #[test]
+    fn operation_body_carries_query_variables_and_name() {
+        let mut variables = serde_json::Map::new();
+        variables.insert("id".to_string(), json!("1"));
+        let body = operation_body("Me", "query Me { me { id } }", &variables);
+        assert_eq!(body["operationName"], "Me");
+        assert_eq!(body["query"], "query Me { me { id } }");
+        assert_eq!(body["variables"]["id"], "1");
+    }
 
     #[test]
     fn request_body_names_the_operation() {
