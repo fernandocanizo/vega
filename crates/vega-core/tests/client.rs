@@ -94,3 +94,16 @@ fn connection_failure_displays_without_repeating_the_cause() {
     assert!(matches!(err, ClientError::Http(_)));
     assert_eq!(err.to_string(), "request failed");
 }
+
+#[test]
+fn server_error_bodies_do_not_leak_the_api_key() {
+    let (uri, _rx) = serve_once("500 Internal Server Error", "bad key: secret-key!".into());
+    let err = fetch_introspection(&uri, Some("secret-key")).unwrap_err();
+    match err {
+        ClientError::Status { body, .. } => {
+            assert!(body.contains("***"), "{body}");
+            assert!(!body.contains("secret-key"), "{body}");
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
