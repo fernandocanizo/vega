@@ -12,7 +12,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 
 ## Commands
 
-- `just check`: format check, clippy with `-D warnings`, all tests. Run before every commit.
+- `just check`: format check, clippy with `-D warnings`, all tests. Run before every commit. CI (`.github/workflows/ci.yml`) runs the same command on every pull request and on pushes to `main`.
 - `just fix`: apply formatting and auto-fixable lints.
 - `just install`: release build copied to `~/.local/bin/vega`.
 - `just hooks`: enable the git hooks (pre-commit runs `just check`; commit-msg enforces the commit rules below).
