@@ -38,7 +38,7 @@ Run      Query                 | Response
 ## Keys
 
 - Browse: Up/Down move through Results; typing filters; Enter or Right starts designing the highlighted operation; Esc does nothing (quit with Ctrl-Q).
-- Design (tree focus): Up/Down move; Right expands a node; Left collapses it, or jumps to its parent when already collapsed; SPACE toggles a leaf (does nothing on an object); Tab cycles focus through Details, Query and Variables (the tree keys act only on Details); `r` runs; Esc or Backspace returns to Browse, keeping the search text.
+- Design (tree focus): Up/Down move; Right expands a node; Left collapses it, or jumps to its parent when already collapsed; SPACE toggles a leaf (does nothing on an object); Tab cycles focus through Details, Query and Variables (the tree keys act only on Details); `r` runs; Esc returns to Browse, keeping the search text.
 - Variables focus: Up/Down pick a variable; Enter edits it; Esc cancels an edit; Tab returns to the tree.
 - Run: Up/Down and PgUp/PgDn scroll the response; `r` runs again; Tab focuses Variables; Esc returns to Design with the selection intact.
 - Anywhere: `?` or F1 opens help (listing the keys of the current mode), Ctrl-R refreshes the schema, Ctrl-Q quits (`q` also quits outside text entry).

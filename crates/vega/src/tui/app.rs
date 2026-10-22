@@ -47,7 +47,7 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("←", "Collapse a node, or go to its parent"),
     ("Space", "Select or unselect a field"),
     ("Tab", "Move to the next pane"),
-    ("Esc / Backspace", "Back to the results"),
+    ("Esc", "Back to the results"),
     ("q / Ctrl-Q", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
     ("h / ? / F1", "Show or hide this help"),
@@ -199,7 +199,7 @@ impl App {
     fn handle_design_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Esc | KeyCode::Backspace => self.leave_design(),
+            KeyCode::Esc => self.leave_design(),
             KeyCode::Tab => self.next_focus(),
             _ if self
                 .design
@@ -677,14 +677,14 @@ mod tests {
     }
 
     #[test]
-    fn backspace_goes_back_like_esc_in_design_and_edits_the_search_in_browse() {
+    fn backspace_edits_the_search_in_browse_and_does_nothing_in_design() {
         let mut app = design_app();
         open_me(&mut app);
         press(&mut app, KeyCode::Backspace);
-        assert!(app.design.is_none());
-        assert_eq!(app.query, "me");
+        assert!(app.design.is_some());
         assert!(!app.should_quit);
 
+        press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Backspace);
         assert_eq!(app.query, "m");
     }
