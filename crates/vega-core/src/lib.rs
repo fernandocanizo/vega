@@ -2,6 +2,7 @@
 //! No UI dependencies live here.
 
 pub mod cache;
+pub mod config;
 pub mod describe;
 pub mod schema;
 pub mod search;
