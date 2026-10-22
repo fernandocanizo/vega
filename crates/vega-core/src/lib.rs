@@ -9,6 +9,7 @@ pub mod querygen;
 pub mod schema;
 pub mod search;
 pub mod selection;
+pub mod variables;
 pub mod xdg;
 
 #[cfg(test)]
