@@ -110,6 +110,11 @@ pub struct InputValue {
 }
 
 impl InputValue {
+    /// Required means non-null with no default value: the server cannot do without it.
+    pub fn is_required(&self) -> bool {
+        self.ty.kind == TypeKind::NonNull && self.default_value.is_none()
+    }
+
     /// `name: Type`, with ` = default` when the server reports one.
     pub fn render(&self) -> String {
         match &self.default_value {
@@ -129,7 +134,7 @@ pub struct EnumValue {
     pub deprecation_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TypeRef {
     pub kind: TypeKind,
     pub name: Option<String>,
@@ -272,5 +277,46 @@ mod tests {
         assert!(schema.resolve_type("Nope").is_none());
         assert!(schema.is_root_type("QueryType"));
         assert!(!schema.is_root_type("User"));
+    }
+
+    #[test]
+    fn arguments_are_required_when_non_null_without_a_default() {
+        use crate::testutil::design_schema;
+        let schema = design_schema();
+        let field = |name: &str| {
+            schema
+                .root_type(Root::Query)
+                .unwrap()
+                .fields
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap()
+                .clone()
+        };
+        let flags = |name: &str| -> Vec<(String, bool)> {
+            field(name)
+                .args
+                .iter()
+                .map(|a| (a.name.clone(), a.is_required()))
+                .collect()
+        };
+        assert_eq!(
+            flags("search"),
+            [("term".to_string(), true), ("first".to_string(), false)]
+        );
+        // `limit` is non-null but has a default value, so it is optional.
+        assert_eq!(
+            flags("users"),
+            [
+                ("role".to_string(), false),
+                ("active".to_string(), false),
+                ("floor".to_string(), false),
+                ("ids".to_string(), false),
+                ("filter".to_string(), false),
+                ("limit".to_string(), false)
+            ]
+        );
     }
 }

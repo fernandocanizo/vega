@@ -11,7 +11,16 @@
             { "name": "me", "description": "The current user.", "args": [], "type": { "kind": "OBJECT", "name": "User", "ofType": null }, "isDeprecated": false, "deprecationReason": null },
             { "name": "node", "description": "Fetch any node by id.", "args": [ { "name": "id", "description": null, "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } }, "defaultValue": null } ], "type": { "kind": "INTERFACE", "name": "Node", "ofType": null }, "isDeprecated": false, "deprecationReason": null },
             { "name": "search", "description": "Search users and posts.", "args": [ { "name": "term", "description": null, "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "String", "ofType": null } }, "defaultValue": null }, { "name": "first", "description": null, "type": { "kind": "SCALAR", "name": "Int", "ofType": null }, "defaultValue": null } ], "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "LIST", "name": null, "ofType": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "UNION", "name": "SearchResult", "ofType": null } } } }, "isDeprecated": false, "deprecationReason": null },
-            { "name": "version", "description": "Server version.", "args": [], "type": { "kind": "SCALAR", "name": "String", "ofType": null }, "isDeprecated": false, "deprecationReason": null }
+            { "name": "version", "description": "Server version.", "args": [], "type": { "kind": "SCALAR", "name": "String", "ofType": null }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "users", "description": "List users.", "args": [
+                { "name": "role", "description": "Only this role.", "type": { "kind": "ENUM", "name": "Role", "ofType": null }, "defaultValue": null },
+                { "name": "active", "description": null, "type": { "kind": "SCALAR", "name": "Boolean", "ofType": null }, "defaultValue": null },
+                { "name": "floor", "description": null, "type": { "kind": "SCALAR", "name": "Float", "ofType": null }, "defaultValue": null },
+                { "name": "ids", "description": null, "type": { "kind": "LIST", "name": null, "ofType": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } } }, "defaultValue": null },
+                { "name": "filter", "description": null, "type": { "kind": "INPUT_OBJECT", "name": "PostInput", "ofType": null }, "defaultValue": null },
+                { "name": "limit", "description": "Page size.", "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "Int", "ofType": null } }, "defaultValue": "10" }
+              ], "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "LIST", "name": null, "ofType": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "OBJECT", "name": "User", "ofType": null } } } }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "postCount", "description": "Number of posts.", "args": [ { "name": "since", "description": null, "type": { "kind": "SCALAR", "name": "String", "ofType": null }, "defaultValue": null } ], "type": { "kind": "SCALAR", "name": "Int", "ofType": null }, "isDeprecated": false, "deprecationReason": null }
           ],
           "inputFields": null, "enumValues": null, "possibleTypes": null
         },
@@ -74,6 +83,7 @@
         { "kind": "SCALAR", "name": "ID", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null },
         { "kind": "SCALAR", "name": "String", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null },
         { "kind": "SCALAR", "name": "Int", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null },
+        { "kind": "SCALAR", "name": "Float", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null },
         { "kind": "SCALAR", "name": "Boolean", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null }
       ]
     }
