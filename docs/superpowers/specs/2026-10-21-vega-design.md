@@ -43,7 +43,7 @@ Motivations:
 
 - Precedence: CLI flags, then environment variables, then `config.toml`.
 - Environment variables: `VEGA_GRAPHQL_URI` (endpoint) and `VEGA_GRAPHQL_KEY` (API key).
-- The API key is sent as the `X-API-Key` header on a `POST` with `Content-Type: application/json`, matching `example.curl.query.sh`.
+- The API key is sent as the `X-API-Key` header on a `POST` with `Content-Type: application/json`, as in `curl -X POST -H "Content-Type: application/json" -H "X-API-Key: $VEGA_GRAPHQL_KEY" -d @- "$VEGA_GRAPHQL_URI"`.
 - The API key is never written to disk, the cache, or logs.
 
 ## Architecture
