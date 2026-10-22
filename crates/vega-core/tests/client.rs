@@ -87,3 +87,10 @@ fn graphql_errors_in_a_200_response_are_reported() {
     let err = fetch_introspection(&uri, None).unwrap_err();
     assert!(matches!(&err, ClientError::Graphql(m) if m == "Introspection is disabled"));
 }
+
+#[test]
+fn connection_failure_displays_without_repeating_the_cause() {
+    let err = fetch_introspection("http://127.0.0.1:9/graphql", None).unwrap_err();
+    assert!(matches!(err, ClientError::Http(_)));
+    assert_eq!(err.to_string(), "request failed");
+}
