@@ -2,7 +2,7 @@ use clap::Parser;
 
 /// Explore a GraphQL server's schema from the terminal.
 ///
-/// Without --search or --describe, opens the interactive browser.
+/// Without --search, --describe or --query, opens the interactive browser.
 /// The API key is read from the VEGA_GRAPHQL_KEY environment variable.
 #[derive(Debug, Parser)]
 #[command(name = "vega", version)]
@@ -23,7 +23,16 @@ pub struct Cli {
     #[arg(long, value_name = "TARGET")]
     pub describe: Option<String>,
 
-    /// Print JSON on stdout for --search and --describe
+    /// Print the query generated for OPERATION (e.g. Query.userRead); sends nothing
+    #[arg(long, value_name = "OPERATION", conflicts_with_all = ["search", "describe"])]
+    pub query: Option<String>,
+
+    /// Fields to select with --query: comma-separated paths such as id,friends.name
+    /// (union or interface branches as on:Type, e.g. on:User.name)
+    #[arg(long, value_name = "PATHS", requires = "query")]
+    pub select: Option<String>,
+
+    /// Print JSON on stdout for --search, --describe and --query
     #[arg(long)]
     pub json: bool,
 }

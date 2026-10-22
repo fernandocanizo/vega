@@ -6,7 +6,9 @@ mod tui;
 use anyhow::Context;
 use clap::Parser;
 use vega_core::config::{self, FileConfig};
-use vega_core::{cache, describe, search, xdg};
+use vega_core::schema::Schema;
+use vega_core::selection::{self, OperationRef, Selection};
+use vega_core::{cache, describe, querygen, search, xdg};
 
 use crate::cli::Cli;
 
@@ -40,7 +42,7 @@ fn main() -> anyhow::Result<()> {
     let age = entry.age_secs(cache::now_secs());
     let schema = &entry.response.data.schema;
 
-    if cli.search.is_some() || cli.describe.is_some() {
+    if cli.search.is_some() || cli.describe.is_some() || cli.query.is_some() {
         if cache::is_stale(age) {
             eprintln!(
                 "warning: the schema cache for {} was fetched {} ago; run with --refresh to update it",
@@ -62,9 +64,33 @@ fn main() -> anyhow::Result<()> {
             } else {
                 print!("{}", describe::render_text(&detail));
             }
+        } else if let Some(target) = &cli.query {
+            print_query(schema, target, cli.select.as_deref(), cli.json)?;
         }
         return Ok(());
     }
 
     tui::run(entry, settings, cache_file)
+}
+
+fn print_query(
+    schema: &Schema,
+    target: &str,
+    select: Option<&str>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let operation = OperationRef::parse(schema, target).with_context(|| {
+        format!("operation `{target}` not found: use Query.<field>, Mutation.<field> or Subscription.<field>")
+    })?;
+    let selection = match select {
+        Some(text) => selection::parse_select(schema, &operation, text)?,
+        None => Selection::default(),
+    };
+    let query = querygen::generate(schema, &operation, &selection)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&query)?);
+    } else {
+        print!("{}", output::query_text(&query));
+    }
+    Ok(())
 }
