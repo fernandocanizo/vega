@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::app::{App, StatusLevel};
+use crate::tui::app::{App, Focus, StatusLevel};
 use vega_core::selection::{NodeKind, Row};
 
 /// Version shown in the help modal title.
@@ -122,7 +122,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App, now: u64) {
 fn draw_search(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Search (type to filter · Enter/→ open · Esc quit · ? help)");
+        .title("Search (type to filter · Enter/→ open · Ctrl-Q quit · ? help)");
     frame.render_widget(Paragraph::new(app.query.as_str()).block(block), area);
     let typed = u16::try_from(app.query.chars().count()).unwrap_or(u16::MAX);
     frame.set_cursor_position((area.x.saturating_add(1).saturating_add(typed), area.y + 1));
@@ -147,12 +147,39 @@ fn draw_hits(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+/// Top pane share of every two-pane column, so paired panes line up.
+const TOP_PANE_PERCENT: u16 = 70;
+
+fn split_column(area: Rect) -> [Rect; 2] {
+    let parts = Layout::vertical([
+        Constraint::Percentage(TOP_PANE_PERCENT),
+        Constraint::Percentage(100 - TOP_PANE_PERCENT),
+    ])
+    .split(area);
+    [parts[0], parts[1]]
+}
+
+/// A bordered pane; the focused one gets a highlighted border.
+fn pane<'a>(title: &'a str, focused: bool) -> Block<'a> {
+    let block = Block::default().borders(Borders::ALL).title(title);
+    if focused {
+        block.border_style(Style::default().fg(Color::Cyan))
+    } else {
+        block
+    }
+}
+
+fn has_focus(app: &App, focus: Focus) -> bool {
+    app.design
+        .as_ref()
+        .is_some_and(|design| design.focus == focus)
+}
+
 /// The Details tree over the Description pane.
 fn draw_details(frame: &mut Frame, area: Rect, app: &App, rows: &[Row], cursor: Option<usize>) {
-    let parts =
-        Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)]).split(area);
+    let parts = split_column(area);
 
-    let block = Block::default().borders(Borders::ALL).title("Details");
+    let block = pane("Details", has_focus(app, Focus::Details));
     if rows.is_empty() {
         frame.render_widget(Paragraph::new("No matches").block(block), parts[0]);
     } else {
@@ -176,15 +203,14 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App, rows: &[Row], cursor: 
 
 /// The generated query over the variables it needs.
 fn draw_query(frame: &mut Frame, area: Rect, app: &App) {
-    let parts =
-        Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)]).split(area);
+    let parts = split_column(area);
     let query = app.generated_query();
 
     let text = match &query {
         Some(Ok(generated)) => generated.text.clone(),
         Some(Err(_)) | None => "Select fields with Space to build the query".to_string(),
     };
-    let block = Block::default().borders(Borders::ALL).title("Query");
+    let block = pane("Query", has_focus(app, Focus::Query));
     frame.render_widget(Paragraph::new(text).block(block), parts[0]);
 
     let variables = match &query {
@@ -196,7 +222,7 @@ fn draw_query(frame: &mut Frame, area: Rect, app: &App) {
             .join("\n"),
         _ => "No variables".to_string(),
     };
-    let block = Block::default().borders(Borders::ALL).title("Variables");
+    let block = pane("Variables", has_focus(app, Focus::Variables));
     frame.render_widget(Paragraph::new(variables).block(block), parts[1]);
 }
 
@@ -366,6 +392,14 @@ mod tests {
         assert!(text.contains("☑ id: ID!"));
         assert!(text.contains("query Me {"));
         assert!(!text.contains("Select fields with Space"));
+    }
+
+    #[test]
+    fn panes_of_a_pair_share_their_height() {
+        let app = design_app_on("me");
+        let text = screen(&render(&app, 1_000));
+        let row_of = |title: &str| text[..text.find(title).unwrap()].chars().count() / 100;
+        assert_eq!(row_of("Description"), row_of("Variables"));
     }
 
     #[test]

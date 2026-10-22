@@ -35,10 +35,9 @@ pub enum StatusLevel {
 pub const BROWSE_KEYS: &[(&str, &str)] = &[
     ("↑ / ↓", "Move through the results"),
     ("Enter / →", "Open the highlighted item as a tree"),
-    ("Esc", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
     ("? / F1", "Show or hide this help"),
-    ("Ctrl-C", "Quit"),
+    ("Ctrl-Q", "Quit"),
 ];
 
 /// Hotkeys in Design mode.
@@ -47,12 +46,20 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("→", "Expand a node, or step into it"),
     ("←", "Collapse a node, or go to its parent"),
     ("Space", "Select or unselect a field"),
-    ("Esc", "Back to the results"),
-    ("q", "Quit"),
+    ("Tab", "Move to the next pane"),
+    ("Esc / Backspace", "Back to the results"),
+    ("q / Ctrl-Q", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
     ("h / ? / F1", "Show or hide this help"),
-    ("Ctrl-C", "Quit"),
 ];
+
+/// The pane that receives the keys in Design mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Details,
+    Query,
+    Variables,
+}
 
 /// The tree being explored: which root, which nodes are expanded, where the cursor is.
 #[derive(Debug, Clone)]
@@ -61,6 +68,7 @@ pub struct DesignState {
     pub expanded: BTreeSet<Path>,
     pub cursor: usize,
     pub selection: Selection,
+    pub focus: Focus,
 }
 
 impl DesignState {
@@ -72,6 +80,7 @@ impl DesignState {
             expanded,
             cursor: 0,
             selection: Selection::default(),
+            focus: Focus::Details,
         }
     }
 
@@ -126,7 +135,7 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
-                KeyCode::Char('c') => {
+                KeyCode::Char('q') => {
                     self.should_quit = true;
                     Action::None
                 }
@@ -170,7 +179,6 @@ impl App {
 
     fn handle_search_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Esc => self.should_quit = true,
             KeyCode::Char(c) => {
                 self.query.push(c);
                 self.rerun_search();
@@ -191,7 +199,12 @@ impl App {
     fn handle_design_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Esc => self.leave_design(),
+            KeyCode::Esc | KeyCode::Backspace => self.leave_design(),
+            KeyCode::Tab => self.next_focus(),
+            _ if self
+                .design
+                .as_ref()
+                .is_some_and(|design| design.focus != Focus::Details) => {}
             KeyCode::Char(' ') => self.toggle_under_cursor(),
             KeyCode::Down => self.move_cursor(1),
             KeyCode::Up => self.move_cursor(-1),
@@ -199,6 +212,21 @@ impl App {
             KeyCode::Left => self.collapse_or_go_up(),
             _ => {}
         }
+    }
+
+    /// Details, then Query, then Variables, then back. A type tree has only Details.
+    fn next_focus(&mut self) {
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
+        if design.read_only() {
+            return;
+        }
+        design.focus = match design.focus {
+            Focus::Details => Focus::Query,
+            Focus::Query => Focus::Variables,
+            Focus::Variables => Focus::Details,
+        };
     }
 
     fn rerun_search(&mut self) {
@@ -461,13 +489,14 @@ mod tests {
     }
 
     #[test]
-    fn esc_quits_from_the_search_list_and_q_is_just_a_letter_there() {
+    fn esc_does_not_quit_the_search_list_and_q_is_just_a_letter_there() {
         let mut app = app();
         press(&mut app, KeyCode::Char('q'));
         assert!(!app.should_quit);
         assert_eq!(app.query, "q");
         press(&mut app, KeyCode::Esc);
-        assert!(app.should_quit);
+        assert!(!app.should_quit);
+        assert_eq!(app.query, "q");
     }
 
     #[test]
@@ -605,12 +634,12 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_quits_and_ctrl_r_refreshes_while_help_is_open() {
+    fn ctrl_q_quits_and_ctrl_r_refreshes_while_help_is_open() {
         let mut app = app();
         press(&mut app, KeyCode::F(1));
         assert_eq!(ctrl(&mut app, 'r'), Action::Refresh);
         assert!(app.help_open);
-        ctrl(&mut app, 'c');
+        ctrl(&mut app, 'q');
         assert!(app.should_quit);
     }
 
@@ -634,10 +663,68 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_quits_anywhere() {
+    fn ctrl_q_quits_anywhere_and_ctrl_c_no_longer_does() {
         let mut app = app();
         ctrl(&mut app, 'c');
+        assert!(!app.should_quit);
+        ctrl(&mut app, 'q');
         assert!(app.should_quit);
+
+        let mut app = design_app();
+        open_me(&mut app);
+        ctrl(&mut app, 'q');
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn backspace_goes_back_like_esc_in_design_and_edits_the_search_in_browse() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Backspace);
+        assert!(app.design.is_none());
+        assert_eq!(app.query, "me");
+        assert!(!app.should_quit);
+
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.query, "m");
+    }
+
+    #[test]
+    fn tab_cycles_the_focus_and_the_tree_keys_only_act_on_details() {
+        use super::Focus;
+        let mut app = design_app();
+        open_me(&mut app);
+        assert_eq!(app.design.as_ref().unwrap().focus, Focus::Details);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.design.as_ref().unwrap().focus, Focus::Query);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.design.as_ref().unwrap().cursor, 0);
+        assert!(matches!(app.generated_query(), Some(Err(_))));
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.design.as_ref().unwrap().focus, Focus::Variables);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.design.as_ref().unwrap().focus, Focus::Details);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.design.as_ref().unwrap().cursor, 1);
+    }
+
+    #[test]
+    fn esc_goes_back_from_any_focus_and_tab_does_nothing_on_a_type_tree() {
+        use super::Focus;
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.design.is_none());
+
+        let mut app = design_app();
+        type_text(&mut app, "postinput");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.design.as_ref().unwrap().focus, Focus::Details);
     }
 
     #[test]
@@ -880,7 +967,10 @@ mod tests {
         assert!(!app.help_keys().iter().any(|(keys, _)| keys.contains('q')));
         open_me(&mut app);
         assert!(app.help_keys().iter().any(|(keys, _)| keys.contains("←")));
-        assert!(app.help_keys().iter().any(|(keys, _)| *keys == "q"));
+        assert!(app
+            .help_keys()
+            .iter()
+            .any(|(keys, _)| keys.starts_with("q")));
     }
 
     #[test]
