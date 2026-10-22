@@ -23,6 +23,7 @@ The screen always shows at most two main panes side by side, with shorter panes 
 
 ```
 Browse   Results (names only)  | Details (tree, read-only preview)
+                               | Description
 Design   Details (tree)        | Query (read-only)
          Description           | Variables
 Run      Query                 | Response
@@ -45,7 +46,7 @@ Run      Query                 | Response
 
 ## Tree model
 
-- Children are built lazily when a node is expanded, so recursive types never expand forever. A type that already appears on the path from the root is shown as a collapsed node marked `↻` and cannot be expanded further.
+- Children are built lazily when a node is expanded, so recursive types never expand forever. A type that has already appeared twice on the path from the root is shown as a collapsed node marked `↻` and cannot be expanded further, so one level of self-nesting (`me`, then `friends`) still works.
 - A field with arguments has an `args` child group. Required arguments are included automatically and shown as fixed rows; optional arguments are toggled with SPACE.
 - A union or interface field expands into one branch per possible type (`on User`, `on Org`). Fields of an interface can also be selected directly.
 - The selection is the set of selected leaf paths. The query is derived from it after every change.
@@ -75,6 +76,7 @@ Run      Query                 | Response
 ## CLI parity
 
 - `vega --query <Type.field> --select <paths> --var name=value ...` prints the generated query and the variables and sends nothing. `--select` takes comma-separated paths relative to the operation (`id,role,friends.name`; union branches as `on:Type`, for example `search.on:User.name`).
+- `--select` paths may go through recursive types to any depth, even though the interactive tree stops expanding a type that already appears twice on the path.
 - Adding `--run` sends the request and prints the response. `--json` gives machine-readable output on stdout.
 - A mutation run without a terminal requires `--yes`.
 - Warnings and errors go to stderr only; stdout stays machine-readable.
