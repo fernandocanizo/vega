@@ -5,6 +5,7 @@ pub mod cache;
 pub mod client;
 pub mod config;
 pub mod describe;
+pub mod querygen;
 pub mod schema;
 pub mod search;
 pub mod selection;
