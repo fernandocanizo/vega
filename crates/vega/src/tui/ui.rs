@@ -8,8 +8,9 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::app::{App, Focus, StatusLevel};
+use crate::tui::app::{App, Edit, Focus, StatusLevel, VariableRow};
 use vega_core::selection::{NodeKind, Row};
+use vega_core::variables::{self, State};
 
 /// Version shown in the help modal title.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -213,17 +214,67 @@ fn draw_query(frame: &mut Frame, area: Rect, app: &App) {
     let block = pane("Query", has_focus(app, Focus::Query));
     frame.render_widget(Paragraph::new(text).block(block), parts[0]);
 
-    let variables = match &query {
-        Some(Ok(generated)) if !generated.variables.is_empty() => generated
-            .variables
-            .iter()
-            .map(|v| format!("${}: {}", v.name, v.ty))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => "No variables".to_string(),
-    };
+    let rows = app.variable_rows();
     let block = pane("Variables", has_focus(app, Focus::Variables));
-    frame.render_widget(Paragraph::new(variables).block(block), parts[1]);
+    if rows.is_empty() {
+        frame.render_widget(Paragraph::new("No variables").block(block), parts[1]);
+        return;
+    }
+    let (cursor, edit) = match &app.design {
+        Some(design) => (design.var_cursor.min(rows.len() - 1), design.edit.as_ref()),
+        None => (0, None),
+    };
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| variable_item(row, if index == cursor { edit } else { None }))
+        .collect();
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default();
+    if has_focus(app, Focus::Variables) {
+        state.select(Some(cursor));
+    }
+    frame.render_stateful_widget(list, parts[1], &mut state);
+}
+
+/// `$name: Type = value`, with a dim note for an empty optional and a red reason for a
+/// value that cannot be sent.
+fn variable_item(row: &VariableRow, edit: Option<&Edit>) -> ListItem<'static> {
+    let mut spans = vec![Span::raw(format!("${}: {}", row.def.name, row.def.ty))];
+    let dim = Style::default().fg(Color::DarkGray);
+    let red = Style::default().fg(Color::Red);
+    match edit {
+        Some(Edit::Text(buffer)) => spans.push(Span::raw(format!(" = {buffer}▏"))),
+        Some(Edit::Choice { options, index }) => {
+            let shown = options
+                .get(*index)
+                .map(String::as_str)
+                .filter(|option| !option.is_empty())
+                .unwrap_or("(unset)");
+            spans.push(Span::raw(format!(" = ‹{shown}›")));
+        }
+        None => match &row.state {
+            State::Value(value) => {
+                spans.push(Span::raw(format!(" = {}", variables::display(value))));
+            }
+            State::Unset => {
+                let note = match &row.def.default {
+                    Some(default) => format!("  (default {default})"),
+                    None => "  (omitted)".to_string(),
+                };
+                spans.push(Span::styled(note, dim));
+            }
+            State::Invalid(reason) if row.raw.is_empty() => {
+                spans.push(Span::styled(format!("  ← {reason}"), red));
+            }
+            State::Invalid(reason) => {
+                spans.push(Span::styled(format!(" = {}  ← {reason}", row.raw), red));
+            }
+        },
+    }
+    ListItem::new(Line::from(spans))
 }
 
 fn tree_item(app: &App, row: &Row) -> ListItem<'static> {
@@ -477,5 +528,32 @@ mod tests {
         press_key(&mut app, KeyCode::Down);
         press_key(&mut app, KeyCode::Char(' '));
         assert!(screen(&render(&app, 1_000)).contains("☑ role: Role"));
+    }
+
+    #[test]
+    fn a_missing_required_variable_is_listed_with_its_reason() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = design_app_on("node");
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Char(' ')); // id
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("$id: ID!"));
+        assert!(text.contains("← required"));
+    }
+
+    #[test]
+    fn variable_rows_survive_tiny_terminals() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = design_app_on("node");
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Char(' '));
+        press_key(&mut app, KeyCode::Tab);
+        press_key(&mut app, KeyCode::Tab);
+        for (w, h) in [(20, 5), (1, 1), (0, 0), (3, 40), (80, 24)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|frame| draw(frame, &app, 1_000)).unwrap();
+        }
     }
 }

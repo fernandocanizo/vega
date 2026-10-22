@@ -4,10 +4,11 @@ use std::collections::{BTreeSet, HashMap};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use vega_core::cache::{format_age, is_stale};
-use vega_core::querygen::{self, GenerateError, GeneratedQuery};
+use vega_core::querygen::{self, GenerateError, GeneratedQuery, VariableDef};
 use vega_core::schema::Schema;
 use vega_core::search::{self, Hit};
 use vega_core::selection::{self, Path, Row, Seg, Selection, TreeRoot};
+use vega_core::variables::{self, State, Values};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -61,6 +62,25 @@ pub enum Focus {
     Variables,
 }
 
+/// An edit in progress in the Variables pane.
+#[allow(dead_code)] // the variants are only rendered until editing exists
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    /// Typing a value (numbers, IDs, strings, JSON).
+    Text(String),
+    /// Picking one of a list of values (enums); an empty option means "unset".
+    Choice { options: Vec<String>, index: usize },
+}
+
+/// One line of the Variables pane.
+#[derive(Debug, Clone)]
+pub struct VariableRow {
+    pub def: VariableDef,
+    /// What the user typed ("" when nothing).
+    pub raw: String,
+    pub state: State,
+}
+
 /// The tree being explored: which root, which nodes are expanded, where the cursor is.
 #[derive(Debug, Clone)]
 pub struct DesignState {
@@ -69,6 +89,9 @@ pub struct DesignState {
     pub cursor: usize,
     pub selection: Selection,
     pub focus: Focus,
+    pub values: Values,
+    pub var_cursor: usize,
+    pub edit: Option<Edit>,
 }
 
 impl DesignState {
@@ -81,6 +104,9 @@ impl DesignState {
             cursor: 0,
             selection: Selection::default(),
             focus: Focus::Details,
+            values: Values::new(),
+            var_cursor: 0,
+            edit: None,
         }
     }
 
@@ -201,6 +227,8 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => self.leave_design(),
             KeyCode::Tab => self.next_focus(),
+            KeyCode::Up if self.focused(Focus::Variables) => self.move_var_cursor(-1),
+            KeyCode::Down if self.focused(Focus::Variables) => self.move_var_cursor(1),
             _ if self
                 .design
                 .as_ref()
@@ -275,6 +303,41 @@ impl App {
             operation,
             &design.selection,
         ))
+    }
+
+    /// The variables of the generated query with their typed values (empty when there is
+    /// no valid query to show).
+    pub fn variable_rows(&self) -> Vec<VariableRow> {
+        let (Some(design), Some(Ok(query))) = (self.design.as_ref(), self.generated_query()) else {
+            return Vec::new();
+        };
+        query
+            .variables
+            .into_iter()
+            .map(|def| {
+                let typed = design.values.get(&def.path).map(String::as_str);
+                let state = variables::state(&self.schema, &def, typed);
+                VariableRow {
+                    raw: typed.unwrap_or_default().to_string(),
+                    def,
+                    state,
+                }
+            })
+            .collect()
+    }
+
+    fn focused(&self, focus: Focus) -> bool {
+        self.design
+            .as_ref()
+            .is_some_and(|design| design.focus == focus)
+    }
+
+    fn move_var_cursor(&mut self, delta: isize) {
+        let last = self.variable_rows().len().saturating_sub(1);
+        if let Some(design) = self.design.as_mut() {
+            design.var_cursor = design.var_cursor.min(last);
+            design.var_cursor = design.var_cursor.saturating_add_signed(delta).min(last);
+        }
     }
 
     /// True when the leaf at `path` is selected, or the optional argument at it is opted in.
@@ -1135,5 +1198,66 @@ mod tests {
             query_text(&app),
             "query Users($role: Role) {\n  users(role: $role) {\n    id\n  }\n}"
         );
+    }
+
+    /// Opens Query.node with `id` selected and the Variables pane focused.
+    fn node_variables(app: &mut App) {
+        type_text(app, "node");
+        assert_eq!(app.hits[0].path, "Query.node");
+        press(app, KeyCode::Enter);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Char(' ')); // id
+        press(app, KeyCode::Tab);
+        press(app, KeyCode::Tab);
+    }
+
+    #[test]
+    fn variable_rows_follow_the_included_arguments() {
+        let mut app = design_app();
+        open_me(&mut app);
+        assert!(app.variable_rows().is_empty());
+
+        let mut app = design_app();
+        node_variables(&mut app);
+        let rows = app.variable_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].def.name, "id");
+        assert_eq!(rows[0].raw, "");
+        assert_eq!(
+            rows[0].state,
+            vega_core::variables::State::Invalid("required".to_string())
+        );
+    }
+
+    #[test]
+    fn up_and_down_move_the_variable_cursor_when_variables_has_focus() {
+        use super::Focus;
+        let mut app = design_app();
+        type_text(&mut app, "users");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // id
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // role
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // active
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.design.as_ref().unwrap().focus, Focus::Variables);
+        assert_eq!(app.variable_rows().len(), 2);
+
+        let tree_cursor = app.design.as_ref().unwrap().cursor;
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.design.as_ref().unwrap().var_cursor, 1);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.design.as_ref().unwrap().var_cursor, 1);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.design.as_ref().unwrap().var_cursor, 0);
+        assert_eq!(app.design.as_ref().unwrap().cursor, tree_cursor);
     }
 }
