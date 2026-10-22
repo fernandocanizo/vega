@@ -34,6 +34,19 @@ pub struct DetailView {
     pub selected: usize,
 }
 
+/// Every mapped hotkey as (keys, description); rendered by the help modal.
+pub const HELP_KEYS: &[(&str, &str)] = &[
+    ("↑ / ↓", "Move the selection"),
+    ("Enter / →", "Open or follow the selected item"),
+    ("Backspace / ←", "Go back (detail view)"),
+    ("Esc", "Go back; quit from the search list"),
+    ("q", "Quit (detail view)"),
+    ("Ctrl-R", "Refresh the schema"),
+    ("? / F1", "Show or hide this help"),
+    ("h", "Show or hide this help (detail view)"),
+    ("Ctrl-C", "Quit"),
+];
+
 pub struct App {
     schema: Schema,
     host: String,
@@ -45,6 +58,7 @@ pub struct App {
     back_stack: Vec<DetailView>,
     pub refresh: RefreshState,
     pub should_quit: bool,
+    pub help_open: bool,
 }
 
 /// `https://nexus.example.com/graphql` becomes `nexus.example.com`.
@@ -71,6 +85,7 @@ impl App {
             back_stack: Vec::new(),
             refresh: RefreshState::Idle,
             should_quit: false,
+            help_open: false,
         }
     }
 
@@ -84,6 +99,24 @@ impl App {
                 KeyCode::Char('r') => self.request_refresh(),
                 _ => Action::None,
             };
+        }
+        if self.help_open {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('h' | '?')
+            ) {
+                self.help_open = false;
+            }
+            return Action::None;
+        }
+        let opens_help = match key.code {
+            KeyCode::F(1) | KeyCode::Char('?') => true,
+            KeyCode::Char('h') => self.detail.is_some(),
+            _ => false,
+        };
+        if opens_help {
+            self.help_open = true;
+            return Action::None;
         }
         if self.detail.is_some() {
             self.handle_detail_key(key.code);
@@ -378,6 +411,116 @@ mod tests {
         assert_eq!(app.hits.len(), hits);
         assert!(app.detail.is_none());
         assert!(!app.should_quit);
+    }
+
+    fn open_detail(app: &mut App) {
+        type_text(app, "userread");
+        press(app, KeyCode::Enter);
+        assert!(app.detail.is_some());
+    }
+
+    #[test]
+    fn f1_and_question_mark_open_help_in_both_modes() {
+        for code in [KeyCode::F(1), KeyCode::Char('?')] {
+            let mut app = app();
+            press(&mut app, code);
+            assert!(app.help_open);
+
+            let mut app = self::app();
+            open_detail(&mut app);
+            press(&mut app, code);
+            assert!(app.help_open);
+        }
+    }
+
+    #[test]
+    fn question_mark_is_not_typed_into_the_query() {
+        let mut app = app();
+        type_text(&mut app, "user");
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.query, "user");
+        assert!(app.help_open);
+    }
+
+    #[test]
+    fn h_types_in_the_search_list_but_opens_help_in_a_detail_view() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.query, "h");
+        assert!(!app.help_open);
+
+        let mut app = self::app();
+        open_detail(&mut app);
+        press(&mut app, KeyCode::Char('h'));
+        assert!(app.help_open);
+        assert!(app.detail.is_some());
+    }
+
+    #[test]
+    fn help_closes_with_esc_h_question_mark_and_f1() {
+        for code in [
+            KeyCode::Esc,
+            KeyCode::Char('h'),
+            KeyCode::Char('?'),
+            KeyCode::F(1),
+        ] {
+            let mut app = app();
+            press(&mut app, KeyCode::F(1));
+            press(&mut app, code);
+            assert!(!app.help_open, "{code:?}");
+            assert!(!app.should_quit, "{code:?}");
+            assert_eq!(app.query, "");
+        }
+    }
+
+    #[test]
+    fn esc_closes_only_the_help_in_a_detail_view() {
+        let mut app = app();
+        open_detail(&mut app);
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.help_open);
+        assert_eq!(title(&app), Some("Query.userRead(id: ID!): User"));
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn other_keys_are_ignored_while_help_is_open() {
+        let mut app = app();
+        open_detail(&mut app);
+        press(&mut app, KeyCode::Char('?'));
+        for code in [
+            KeyCode::Down,
+            KeyCode::Right,
+            KeyCode::Left,
+            KeyCode::Enter,
+            KeyCode::Backspace,
+            KeyCode::Char('q'),
+            KeyCode::Char('x'),
+        ] {
+            press(&mut app, code);
+        }
+        assert!(app.help_open);
+        assert!(!app.should_quit);
+        assert_eq!(title(&app), Some("Query.userRead(id: ID!): User"));
+        assert_eq!(app.detail.as_ref().unwrap().selected, 0);
+
+        let mut app = self::app();
+        press(&mut app, KeyCode::F(1));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.query, "");
+        assert_eq!(app.hit_index, 0);
+    }
+
+    #[test]
+    fn ctrl_c_quits_and_ctrl_r_refreshes_while_help_is_open() {
+        let mut app = app();
+        press(&mut app, KeyCode::F(1));
+        assert_eq!(ctrl(&mut app, 'r'), Action::Refresh);
+        assert!(app.help_open);
+        ctrl(&mut app, 'c');
+        assert!(app.should_quit);
     }
 
     #[test]
