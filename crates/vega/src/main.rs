@@ -61,5 +61,5 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    anyhow::bail!("the interactive browser is not wired up yet; use --search or --describe")
+    tui::run(entry, settings, cache_file)
 }
