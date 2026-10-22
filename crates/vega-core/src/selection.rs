@@ -291,6 +291,99 @@ fn push_rows(
     }
 }
 
+/// The set of selected leaf fields. Objects are never stored: they are implied by
+/// the leaves below them.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Selection {
+    leaves: BTreeSet<Path>,
+}
+
+impl Selection {
+    pub fn is_empty(&self) -> bool {
+        self.leaves.is_empty()
+    }
+
+    pub fn contains(&self, path: &[Seg]) -> bool {
+        self.leaves.contains(path)
+    }
+
+    /// True when a selected leaf equals `prefix` or lies below it.
+    pub fn has_under(&self, prefix: &[Seg]) -> bool {
+        self.leaves
+            .range(prefix.to_vec()..)
+            .next()
+            .is_some_and(|path| path.starts_with(prefix))
+    }
+
+    pub fn insert(&mut self, path: Path) {
+        self.leaves.insert(path);
+    }
+
+    /// Toggles a leaf node. Returns whether the selection changed; objects and
+    /// recursive nodes are ignored.
+    pub fn toggle_node(&mut self, node: &Node) -> bool {
+        if node.kind != NodeKind::Leaf {
+            return false;
+        }
+        if !self.leaves.remove(&node.path) {
+            self.leaves.insert(node.path.clone());
+        }
+        true
+    }
+
+    pub fn leaves(&self) -> impl Iterator<Item = &Path> {
+        self.leaves.iter()
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SelectError {
+    #[error("no field selected: pass at least one path, for example `id,name`")]
+    Empty,
+    #[error("`{0}`: no such field or branch")]
+    Unknown(String),
+    #[error("`{0}` has subfields: select one of them, for example `{0}.id`")]
+    NotALeaf(String),
+}
+
+/// Parses `id,friends.name,on:User.name` into a selection. Every path must end at a
+/// leaf. Unlike the tree view, this allows any depth, including through recursive types.
+pub fn parse_select(
+    schema: &Schema,
+    operation: &OperationRef,
+    text: &str,
+) -> Result<Selection, SelectError> {
+    let root = TreeRoot::Operation(operation.clone());
+    let mut selection = Selection::default();
+    for item in text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let mut path: Path = Vec::new();
+        let mut last: Option<Node> = None;
+        for segment in item.split('.') {
+            let seg = match segment.strip_prefix("on:") {
+                Some(type_name) => Seg::Branch(type_name.to_string()),
+                None => Seg::Field(segment.to_string()),
+            };
+            let wanted = join(&path, seg);
+            let found = children(schema, &root, &path)
+                .into_iter()
+                .find(|node| node.path == wanted)
+                .ok_or_else(|| SelectError::Unknown(item.to_string()))?;
+            path = wanted;
+            last = Some(found);
+        }
+        let node = last.ok_or_else(|| SelectError::Unknown(item.to_string()))?;
+        if node.kind != NodeKind::Leaf {
+            return Err(SelectError::NotALeaf(item.to_string()));
+        }
+        selection.insert(path);
+    }
+    if selection.is_empty() {
+        Err(SelectError::Empty)
+    } else {
+        Ok(selection)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,5 +584,88 @@ mod tests {
         let rows = rows(&schema, &r, &expanded);
         assert_eq!(rows.len(), 7);
         assert!(!rows[1].expanded);
+    }
+
+    #[test]
+    fn toggling_selects_and_unselects_leaves_only() {
+        let schema = design_schema();
+        let r = root(&schema, "Query.me");
+        let kids = children(&schema, &r, &[]);
+        let mut selection = Selection::default();
+        assert!(selection.is_empty());
+
+        assert!(selection.toggle_node(&kids[0]));
+        assert!(selection.contains(&kids[0].path));
+        assert!(!selection.is_empty());
+
+        // `friends` is an object: ignored.
+        assert!(!selection.toggle_node(&kids[3]));
+        assert!(!selection.contains(&kids[3].path));
+
+        assert!(selection.toggle_node(&kids[0]));
+        assert!(selection.is_empty());
+    }
+
+    #[test]
+    fn has_under_finds_selected_leaves_at_or_below_a_prefix() {
+        let mut selection = Selection::default();
+        selection.insert(vec![field("friends"), field("name")]);
+        selection.insert(vec![field("id")]);
+        assert!(selection.has_under(&[]));
+        assert!(selection.has_under(&[field("friends")]));
+        assert!(selection.has_under(&[field("friends"), field("name")]));
+        assert!(selection.has_under(&[field("id")]));
+        assert!(!selection.has_under(&[field("friends"), field("id")]));
+        assert!(!selection.has_under(&[field("posts")]));
+        assert!(!Selection::default().has_under(&[]));
+        assert_eq!(selection.leaves().count(), 2);
+    }
+
+    #[test]
+    fn parse_select_accepts_plain_nested_and_branch_paths() {
+        let schema = design_schema();
+        let me = OperationRef::parse(&schema, "Query.me").unwrap();
+        let selection = parse_select(&schema, &me, "id, friends.name").unwrap();
+        assert!(selection.contains(&[field("id")]));
+        assert!(selection.contains(&[field("friends"), field("name")]));
+        assert_eq!(selection.leaves().count(), 2);
+
+        let search = OperationRef::parse(&schema, "Query.search").unwrap();
+        let selection = parse_select(&schema, &search, "on:User.name,on:Post.title").unwrap();
+        assert!(selection.contains(&[branch("User"), field("name")]));
+        assert!(selection.contains(&[branch("Post"), field("title")]));
+    }
+
+    #[test]
+    fn parse_select_allows_any_depth_through_recursive_types() {
+        let schema = design_schema();
+        let me = OperationRef::parse(&schema, "Query.me").unwrap();
+        let selection = parse_select(&schema, &me, "friends.friends.friends.name").unwrap();
+        assert_eq!(selection.leaves().count(), 1);
+    }
+
+    #[test]
+    fn parse_select_rejects_bad_input() {
+        let schema = design_schema();
+        let me = OperationRef::parse(&schema, "Query.me").unwrap();
+        assert_eq!(parse_select(&schema, &me, ""), Err(SelectError::Empty));
+        assert_eq!(parse_select(&schema, &me, " , "), Err(SelectError::Empty));
+        assert_eq!(
+            parse_select(&schema, &me, "nope"),
+            Err(SelectError::Unknown("nope".to_string()))
+        );
+        assert_eq!(
+            parse_select(&schema, &me, "id.deeper"),
+            Err(SelectError::Unknown("id.deeper".to_string()))
+        );
+        assert_eq!(
+            parse_select(&schema, &me, "friends"),
+            Err(SelectError::NotALeaf("friends".to_string()))
+        );
+        let search = OperationRef::parse(&schema, "Query.search").unwrap();
+        assert_eq!(
+            parse_select(&schema, &search, "on:Nope.name"),
+            Err(SelectError::Unknown("on:Nope.name".to_string()))
+        );
     }
 }
