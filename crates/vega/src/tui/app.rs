@@ -50,7 +50,11 @@ pub struct App {
 /// `https://nexus.example.com/graphql` becomes `nexus.example.com`.
 fn host_of(uri: &str) -> String {
     let rest = uri.split_once("://").map_or(uri, |(_, rest)| rest);
-    rest.split('/').next().unwrap_or(rest).to_string()
+    let authority = rest.split('/').next().unwrap_or(rest);
+    authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+        .to_string()
 }
 
 impl App {
@@ -456,5 +460,10 @@ mod tests {
         );
         assert_eq!(host_of("http://127.0.0.1:4000/graphql"), "127.0.0.1:4000");
         assert_eq!(host_of("localhost:4000"), "localhost:4000");
+        assert_eq!(
+            host_of("https://user:pw@nexus.example.com/graphql"),
+            "nexus.example.com"
+        );
+        assert_eq!(host_of("http://user@127.0.0.1:4000"), "127.0.0.1:4000");
     }
 }
