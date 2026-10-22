@@ -457,4 +457,25 @@ mod tests {
         assert_eq!(cell.bg, Color::Red);
         assert!(screen(&terminal).contains("schema fetched 1d ago"));
     }
+
+    #[test]
+    fn arguments_show_as_fixed_and_checkbox_rows() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = design_app_on("node");
+        press_key(&mut app, KeyCode::Down); // args group
+        press_key(&mut app, KeyCode::Right);
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("▾ args"));
+        assert!(text.contains("▪ id: ID!"));
+
+        let mut app = design_app_on("users");
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Right);
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("☐ role: Role"));
+        assert!(text.contains("☐ limit: Int! = 10"));
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Char(' '));
+        assert!(screen(&render(&app, 1_000)).contains("☑ role: Role"));
+    }
 }
