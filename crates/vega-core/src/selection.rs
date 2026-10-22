@@ -16,6 +16,10 @@ pub enum Seg {
     Field(String),
     /// A union or interface branch: `... on Type`.
     Branch(String),
+    /// The `args` group of a field.
+    Args,
+    /// One argument inside an `args` group.
+    Arg(String),
 }
 
 /// Steps from the tree root down to a node. The root itself is the empty path.
@@ -109,6 +113,10 @@ pub enum NodeKind {
     Composite,
     /// Its type already appeared on the path (see `MAX_REPEATS`): cannot be expanded.
     Recursive,
+    /// A required argument: always part of the query, cannot be toggled.
+    Required,
+    /// An optional argument: part of the query only when selected.
+    Optional,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +125,19 @@ pub struct Node {
     pub label: String,
     pub kind: NodeKind,
     pub description: String,
+    /// The field behind this node takes arguments, so it has an `args` group.
+    pub has_args: bool,
+}
+
+impl Node {
+    /// Composite nodes expand, and so do leaves that have arguments.
+    pub fn expandable(&self) -> bool {
+        match self.kind {
+            NodeKind::Composite => true,
+            NodeKind::Leaf => self.has_args,
+            _ => false,
+        }
+    }
 }
 
 /// One visible line of the flattened tree.
@@ -142,6 +163,7 @@ pub fn root_node(schema: &Schema, root: &TreeRoot) -> Option<Node> {
                 label: field.signature(),
                 kind,
                 description: field.description.clone().unwrap_or_default(),
+                has_args: !field.args.is_empty(),
             })
         }
         TreeRoot::Type(_) => {
@@ -160,6 +182,7 @@ pub fn root_node(schema: &Schema, root: &TreeRoot) -> Option<Node> {
                 ),
                 kind,
                 description: ty.description.clone().unwrap_or_default(),
+                has_args: false,
             })
         }
     }
@@ -193,6 +216,7 @@ fn resolve<'a>(
         ty = match seg {
             Seg::Field(name) => schema.type_by_name(field_type_name(ty, name)?)?,
             Seg::Branch(name) => schema.type_by_name(name)?,
+            Seg::Args | Seg::Arg(_) => return None,
         };
         names.push(ty.name.as_deref()?);
     }
@@ -215,19 +239,68 @@ fn node_kind(schema: &Schema, type_name: Option<&str>, names: &[&str]) -> NodeKi
     }
 }
 
+/// The field the node at `path` stands for: the operation at the root, or a field of
+/// the type above it. Branches, arguments and type roots stand for no field.
+fn field_at<'a>(schema: &'a Schema, root: &TreeRoot, path: &[Seg]) -> Option<&'a Field> {
+    match path.split_last() {
+        None => root.operation()?.field(schema),
+        Some((Seg::Field(name), parent)) => {
+            let (ty, _) = resolve(schema, root, parent)?;
+            ty.fields.iter().flatten().find(|f| f.name == *name)
+        }
+        Some(_) => None,
+    }
+}
+
+/// The arguments of the field that owns the `args` group at `group`.
+fn arg_nodes(schema: &Schema, root: &TreeRoot, group: &[Seg]) -> Vec<Node> {
+    let owner = &group[..group.len() - 1];
+    let Some(field) = field_at(schema, root, owner) else {
+        return Vec::new();
+    };
+    field
+        .args
+        .iter()
+        .map(|arg| Node {
+            path: join(group, Seg::Arg(arg.name.clone())),
+            label: arg.render(),
+            kind: if arg.is_required() {
+                NodeKind::Required
+            } else {
+                NodeKind::Optional
+            },
+            description: arg.description.clone().unwrap_or_default(),
+            has_args: false,
+        })
+        .collect()
+}
+
 /// The children of the node at `path`: fields, input fields, enum values, then
 /// union or interface branches, all in schema order.
 pub fn children(schema: &Schema, root: &TreeRoot, path: &[Seg]) -> Vec<Node> {
+    if path.last() == Some(&Seg::Args) {
+        return arg_nodes(schema, root, path);
+    }
     let Some((ty, names)) = resolve(schema, root, path) else {
         return Vec::new();
     };
     let mut nodes = Vec::new();
+    if field_at(schema, root, path).is_some_and(|field| !field.args.is_empty()) {
+        nodes.push(Node {
+            path: join(path, Seg::Args),
+            label: "args".to_string(),
+            kind: NodeKind::Composite,
+            description: "Arguments of this field".to_string(),
+            has_args: false,
+        });
+    }
     for field in ty.fields.iter().flatten() {
         nodes.push(Node {
             path: join(path, Seg::Field(field.name.clone())),
             label: field.signature(),
             kind: node_kind(schema, field.ty.named(), &names),
             description: field.description.clone().unwrap_or_default(),
+            has_args: !field.args.is_empty(),
         });
     }
     for input in ty.input_fields.iter().flatten() {
@@ -236,6 +309,7 @@ pub fn children(schema: &Schema, root: &TreeRoot, path: &[Seg]) -> Vec<Node> {
             label: input.render(),
             kind: node_kind(schema, input.ty.named(), &names),
             description: input.description.clone().unwrap_or_default(),
+            has_args: false,
         });
     }
     for value in ty.enum_values.iter().flatten() {
@@ -244,6 +318,7 @@ pub fn children(schema: &Schema, root: &TreeRoot, path: &[Seg]) -> Vec<Node> {
             label: value.name.clone(),
             kind: NodeKind::Leaf,
             description: value.description.clone().unwrap_or_default(),
+            has_args: false,
         });
     }
     for possible in ty.possible_types.iter().flatten() {
@@ -255,6 +330,7 @@ pub fn children(schema: &Schema, root: &TreeRoot, path: &[Seg]) -> Vec<Node> {
             label: format!("on {name}"),
             kind: node_kind(schema, Some(name), &names),
             description: String::new(),
+            has_args: false,
         });
     }
     nodes
@@ -277,7 +353,7 @@ fn push_rows(
     node: Node,
     depth: usize,
 ) {
-    let is_expanded = node.kind == NodeKind::Composite && expanded.contains(&node.path);
+    let is_expanded = node.expandable() && expanded.contains(&node.path);
     let path = node.path.clone();
     out.push(Row {
         node,
@@ -291,23 +367,31 @@ fn push_rows(
     }
 }
 
-/// The set of selected leaf fields. Objects are never stored: they are implied by
-/// the leaves below them.
+/// The set of selected leaf fields and opted-in optional arguments. Objects are never
+/// stored: they are implied by the leaves below them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Selection {
     leaves: BTreeSet<Path>,
+    args: BTreeSet<Path>,
 }
 
 impl Selection {
+    /// True when neither a leaf nor an optional argument is selected.
     pub fn is_empty(&self) -> bool {
-        self.leaves.is_empty()
+        self.leaves.is_empty() && self.args.is_empty()
     }
 
     pub fn contains(&self, path: &[Seg]) -> bool {
         self.leaves.contains(path)
     }
 
-    /// True when a selected leaf equals `prefix` or lies below it.
+    /// True when an optional argument at `path` was opted in.
+    pub fn arg_included(&self, path: &[Seg]) -> bool {
+        self.args.contains(path)
+    }
+
+    /// True when a selected leaf equals `prefix` or lies below it. Arguments do not
+    /// count: a field with only an opted-in argument still has nothing to select.
     pub fn has_under(&self, prefix: &[Seg]) -> bool {
         self.leaves
             .range(prefix.to_vec()..)
@@ -319,14 +403,20 @@ impl Selection {
         self.leaves.insert(path);
     }
 
-    /// Toggles a leaf node. Returns whether the selection changed; objects and
-    /// recursive nodes are ignored.
+    pub fn insert_arg(&mut self, path: Path) {
+        self.args.insert(path);
+    }
+
+    /// Toggles a leaf or an optional argument. Returns whether the selection changed;
+    /// objects, groups, required arguments and recursive nodes are ignored.
     pub fn toggle_node(&mut self, node: &Node) -> bool {
-        if node.kind != NodeKind::Leaf {
-            return false;
-        }
-        if !self.leaves.remove(&node.path) {
-            self.leaves.insert(node.path.clone());
+        let set = match node.kind {
+            NodeKind::Leaf => &mut self.leaves,
+            NodeKind::Optional => &mut self.args,
+            _ => return false,
+        };
+        if !set.remove(&node.path) {
+            set.insert(node.path.clone());
         }
         true
     }
@@ -344,6 +434,8 @@ pub enum SelectError {
     Unknown(String),
     #[error("`{0}` has subfields: select one of them, for example `{0}.id`")]
     NotALeaf(String),
+    #[error("`{0}` is a required argument: it is always included")]
+    RequiredArgument(String),
 }
 
 /// Parses `id,friends.name,on:User.name` into a selection. Every path must end at a
@@ -359,12 +451,21 @@ pub fn parse_select(
         let mut path: Path = Vec::new();
         let mut last: Option<Node> = None;
         for segment in item.split('.') {
-            let seg = match segment.strip_prefix("on:") {
-                Some(type_name) => Seg::Branch(type_name.to_string()),
-                None => Seg::Field(segment.to_string()),
+            let (parent, wanted) = match segment.strip_prefix("arg:") {
+                Some(name) => {
+                    let group = join(&path, Seg::Args);
+                    let wanted = join(&group, Seg::Arg(name.to_string()));
+                    (group, wanted)
+                }
+                None => {
+                    let seg = match segment.strip_prefix("on:") {
+                        Some(type_name) => Seg::Branch(type_name.to_string()),
+                        None => Seg::Field(segment.to_string()),
+                    };
+                    (path.clone(), join(&path, seg))
+                }
             };
-            let wanted = join(&path, seg);
-            let found = children(schema, &root, &path)
+            let found = children(schema, &root, &parent)
                 .into_iter()
                 .find(|node| node.path == wanted)
                 .ok_or_else(|| SelectError::Unknown(item.to_string()))?;
@@ -372,10 +473,14 @@ pub fn parse_select(
             last = Some(found);
         }
         let node = last.ok_or_else(|| SelectError::Unknown(item.to_string()))?;
-        if node.kind != NodeKind::Leaf {
-            return Err(SelectError::NotALeaf(item.to_string()));
+        match node.kind {
+            NodeKind::Leaf => selection.insert(path),
+            NodeKind::Optional => selection.insert_arg(path),
+            NodeKind::Required => return Err(SelectError::RequiredArgument(item.to_string())),
+            NodeKind::Composite | NodeKind::Recursive => {
+                return Err(SelectError::NotALeaf(item.to_string()))
+            }
         }
-        selection.insert(path);
     }
     if selection.is_empty() {
         Err(SelectError::Empty)
@@ -508,12 +613,17 @@ mod tests {
         let schema = design_schema();
         let r = root(&schema, "Query.node");
         let kids = children(&schema, &r, &[]);
-        assert_eq!(labels(&kids), ["id: ID!", "on User", "on Post"]);
+        assert_eq!(labels(&kids), ["args", "id: ID!", "on User", "on Post"]);
         assert_eq!(
             kinds(&kids),
-            [NodeKind::Leaf, NodeKind::Composite, NodeKind::Composite]
+            [
+                NodeKind::Composite,
+                NodeKind::Leaf,
+                NodeKind::Composite,
+                NodeKind::Composite
+            ]
         );
-        assert_eq!(kids[1].path, vec![branch("User")]);
+        assert_eq!(kids[2].path, vec![branch("User")]);
 
         let user = children(&schema, &r, &[branch("User")]);
         assert_eq!(user.len(), 6);
@@ -525,7 +635,7 @@ mod tests {
     fn unions_list_only_branches() {
         let schema = design_schema();
         let kids = children(&schema, &root(&schema, "Query.search"), &[]);
-        assert_eq!(labels(&kids), ["on User", "on Post"]);
+        assert_eq!(labels(&kids), ["args", "on User", "on Post"]);
     }
 
     #[test]
@@ -666,6 +776,129 @@ mod tests {
         assert_eq!(
             parse_select(&schema, &search, "on:Nope.name"),
             Err(SelectError::Unknown("on:Nope.name".to_string()))
+        );
+    }
+
+    fn arg(name: &str) -> Seg {
+        Seg::Arg(name.to_string())
+    }
+
+    #[test]
+    fn a_field_with_arguments_lists_an_args_group_first() {
+        let schema = design_schema();
+        let r = root(&schema, "Query.node");
+        let kids = children(&schema, &r, &[]);
+        assert_eq!(labels(&kids), ["args", "id: ID!", "on User", "on Post"]);
+        assert_eq!(kids[0].kind, NodeKind::Composite);
+        assert_eq!(kids[0].path, vec![Seg::Args]);
+
+        let args = children(&schema, &r, &[Seg::Args]);
+        assert_eq!(labels(&args), ["id: ID!"]);
+        assert_eq!(kinds(&args), [NodeKind::Required]);
+        assert_eq!(args[0].path, vec![Seg::Args, arg("id")]);
+    }
+
+    #[test]
+    fn optional_and_defaulted_arguments_are_optional_nodes() {
+        let schema = design_schema();
+        let args = children(&schema, &root(&schema, "Query.users"), &[Seg::Args]);
+        assert_eq!(
+            labels(&args),
+            [
+                "role: Role",
+                "active: Boolean",
+                "floor: Float",
+                "ids: [ID!]",
+                "filter: PostInput",
+                "limit: Int! = 10"
+            ]
+        );
+        assert!(kinds(&args).iter().all(|k| *k == NodeKind::Optional));
+    }
+
+    #[test]
+    fn nested_fields_with_arguments_get_their_own_group() {
+        let schema = design_schema();
+        let r = root(&schema, "Query.me");
+        let kids = children(&schema, &r, &[field("posts")]);
+        assert_eq!(kids[0].label, "args");
+        assert_eq!(kids[0].path, vec![field("posts"), Seg::Args]);
+        let args = children(&schema, &r, &[field("posts"), Seg::Args]);
+        assert_eq!(args[0].path, vec![field("posts"), Seg::Args, arg("first")]);
+        assert_eq!(args[0].kind, NodeKind::Required);
+        // A field without arguments has no group.
+        assert_ne!(children(&schema, &r, &[])[0].label, "args");
+        // Arguments are leaves: they have no children of their own.
+        assert!(children(&schema, &r, &[field("posts"), Seg::Args, arg("first")]).is_empty());
+    }
+
+    #[test]
+    fn scalar_operations_with_arguments_can_still_be_expanded() {
+        let schema = design_schema();
+        let r = root(&schema, "Query.postCount");
+        let node = root_node(&schema, &r).unwrap();
+        assert_eq!(node.kind, NodeKind::Leaf);
+        assert!(node.expandable());
+        let mut expanded = BTreeSet::new();
+        expanded.insert(Vec::new());
+        let shown = rows(&schema, &r, &expanded);
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[1].node.label, "args");
+
+        let version = root_node(&schema, &root(&schema, "Query.version")).unwrap();
+        assert!(!version.expandable());
+    }
+
+    #[test]
+    fn toggling_an_optional_argument_selects_it_apart_from_the_leaves() {
+        let schema = design_schema();
+        let r = root(&schema, "Query.search");
+        let args = children(&schema, &r, &[Seg::Args]);
+        let mut selection = Selection::default();
+        assert!(!selection.toggle_node(&args[0])); // term: required
+        assert!(selection.is_empty());
+        assert!(selection.toggle_node(&args[1])); // first: optional
+        assert!(selection.arg_included(&args[1].path));
+        assert!(!selection.has_under(&[]));
+        assert!(!selection.is_empty());
+        assert!(selection.toggle_node(&args[1]));
+        assert!(selection.is_empty());
+    }
+
+    #[test]
+    fn parse_select_accepts_optional_arguments() {
+        let schema = design_schema();
+        let search = OperationRef::parse(&schema, "Query.search").unwrap();
+        let selection = parse_select(&schema, &search, "on:User.name,arg:first").unwrap();
+        assert!(selection.arg_included(&[Seg::Args, arg("first")]));
+        assert!(selection.contains(&[branch("User"), field("name")]));
+
+        let users = OperationRef::parse(&schema, "Query.users").unwrap();
+        let selection = parse_select(&schema, &users, "id,arg:role,arg:limit").unwrap();
+        assert!(selection.arg_included(&[Seg::Args, arg("role")]));
+        assert!(selection.arg_included(&[Seg::Args, arg("limit")]));
+        assert_eq!(selection.leaves().count(), 1);
+
+        // An argument alone is a valid selection for a scalar operation.
+        let count = OperationRef::parse(&schema, "Query.postCount").unwrap();
+        assert!(parse_select(&schema, &count, "arg:since").is_ok());
+    }
+
+    #[test]
+    fn parse_select_rejects_required_and_unknown_arguments() {
+        let schema = design_schema();
+        let search = OperationRef::parse(&schema, "Query.search").unwrap();
+        assert_eq!(
+            parse_select(&schema, &search, "arg:term"),
+            Err(SelectError::RequiredArgument("arg:term".to_string()))
+        );
+        assert_eq!(
+            parse_select(&schema, &search, "arg:nope"),
+            Err(SelectError::Unknown("arg:nope".to_string()))
+        );
+        assert_eq!(
+            parse_select(&schema, &search, "arg:first.x"),
+            Err(SelectError::Unknown("arg:first.x".to_string()))
         );
     }
 }

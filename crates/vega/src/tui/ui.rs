@@ -227,23 +227,31 @@ fn draw_query(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn tree_item(app: &App, row: &Row) -> ListItem<'static> {
+    let editable = app
+        .design
+        .as_ref()
+        .is_some_and(|design| !design.read_only());
+    let checkbox = if app.is_selected(&row.node.path) {
+        "☑ "
+    } else {
+        "☐ "
+    };
     let marker = match row.node.kind {
         NodeKind::Composite if row.expanded => "▾ ",
         NodeKind::Composite => "▸ ",
         NodeKind::Recursive => "↻ ",
-        NodeKind::Leaf => match &app.design {
-            Some(design) if !design.read_only() => {
-                if app.is_selected(&row.node.path) {
-                    "☑ "
-                } else {
-                    "☐ "
-                }
-            }
-            _ => "• ",
-        },
+        NodeKind::Required if editable => "▪ ",
+        NodeKind::Leaf | NodeKind::Optional if editable => checkbox,
+        NodeKind::Leaf | NodeKind::Required | NodeKind::Optional => "• ",
+    };
+    // A leaf that has arguments also shows whether its `args` group is open.
+    let fold = match (row.node.kind, row.node.has_args) {
+        (NodeKind::Leaf, true) if row.expanded => "▾ ",
+        (NodeKind::Leaf, true) => "▸ ",
+        _ => "",
     };
     ListItem::new(Line::raw(format!(
-        "{}{marker}{}",
+        "{}{fold}{marker}{}",
         "  ".repeat(row.depth),
         row.node.label
     )))
@@ -406,6 +414,7 @@ mod tests {
     fn required_arguments_are_listed_as_variables() {
         use ratatui::crossterm::event::KeyCode;
         let mut app = design_app_on("node");
+        press_key(&mut app, KeyCode::Down); // args
         press_key(&mut app, KeyCode::Down); // id
         press_key(&mut app, KeyCode::Char(' '));
         let text = screen(&render(&app, 1_000));
