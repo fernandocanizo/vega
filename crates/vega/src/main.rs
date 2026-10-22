@@ -17,13 +17,18 @@ fn env_var(name: &str) -> Option<String> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    let env_uri = env_var("GRAPHQL_URI");
+    let has_endpoint = [cli.uri.as_deref(), env_uri.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|uri| !uri.is_empty());
     let file_config = match xdg::config_dir() {
-        Some(dir) => config::load_file_config(&dir)?,
-        None => FileConfig::default(),
+        Some(dir) if !has_endpoint => config::load_file_config(&dir)?,
+        _ => FileConfig::default(),
     };
     let settings = config::resolve_settings(
         cli.uri.clone(),
-        env_var("GRAPHQL_URI"),
+        env_uri,
         env_var("GRAPHQL_KEY"),
         file_config,
     )?;
