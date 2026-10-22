@@ -1,0 +1,21 @@
+#!/bin/sh
+# Rejects commit messages that break the rules in AGENTS.md.
+msg_file="$1"
+fail() {
+    echo "commit-msg: $1" >&2
+    exit 1
+}
+
+subject=$(sed -n '1p' "$msg_file")
+printf '%s' "$subject" | grep -Eq '^[a-z]{2,5}: [^ ].*[^.]$' ||
+    fail "subject must look like 'tag: what it does' (tag of 2-5 lowercase letters, no trailing period)"
+[ "$(printf '%s' "$subject" | wc -m)" -le 72 ] ||
+    fail "subject is longer than 72 characters"
+
+grep -v '^#' "$msg_file" | awk 'length($0) > 72 { bad = 1 } END { exit !bad }' &&
+    fail "a line is longer than 72 characters (wrap the body with: fmt -w 72)"
+
+grep -Eiq 'co-authored-by|generated with|made with' "$msg_file" &&
+    fail "no co-author or AI attribution lines"
+
+exit 0
