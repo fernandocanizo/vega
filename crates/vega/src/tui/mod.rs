@@ -40,10 +40,7 @@ fn event_loop(
         terminal.draw(|frame| ui::draw(frame, &app, cache::now_secs()))?;
 
         while let Ok(result) = rx.try_recv() {
-            match persist(cache_file, result) {
-                Ok(entry) => app.apply_refresh_ok(entry.response.data.schema, entry.fetched_at),
-                Err(e) => app.apply_refresh_err(format!("{e:#}")),
-            }
+            apply_fetch(&mut app, cache_file, result);
         }
 
         // Short poll so the status bar age keeps ticking and refresh results show up.
@@ -62,9 +59,18 @@ fn event_loop(
     Ok(())
 }
 
-/// Writes a freshly fetched schema to the cache. A failed fetch leaves the cache alone.
-fn persist(cache_file: &Path, result: anyhow::Result<CacheEntry>) -> anyhow::Result<CacheEntry> {
-    let entry = result?;
-    cache::store(cache_file, &entry)?;
-    Ok(entry)
+/// Applies a fetch result. A failed fetch leaves the cache alone; a fetched schema
+/// is used even when it cannot be written to the cache.
+fn apply_fetch(app: &mut App, cache_file: &Path, result: anyhow::Result<CacheEntry>) {
+    match result {
+        Ok(entry) => {
+            let stored = cache::store(cache_file, &entry);
+            let (schema, fetched_at) = (entry.response.data.schema, entry.fetched_at);
+            match stored {
+                Ok(()) => app.apply_refresh_ok(schema, fetched_at),
+                Err(e) => app.apply_refresh_unsaved(schema, fetched_at, e.to_string()),
+            }
+        }
+        Err(e) => app.apply_refresh_err(format!("{e:#}")),
+    }
 }

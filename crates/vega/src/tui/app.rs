@@ -18,6 +18,8 @@ pub enum RefreshState {
     Idle,
     Running,
     Failed(String),
+    /// The new schema is applied but could not be saved to the cache.
+    CacheWriteFailed(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +194,13 @@ impl App {
         self.rerun_search();
     }
 
+    /// The fetch succeeded but the cache write failed: use the new schema anyway
+    /// and surface the write error in the status bar.
+    pub fn apply_refresh_unsaved(&mut self, schema: Schema, fetched_at: u64, message: String) {
+        self.apply_refresh_ok(schema, fetched_at);
+        self.refresh = RefreshState::CacheWriteFailed(message);
+    }
+
     pub fn apply_refresh_err(&mut self, message: String) {
         self.refresh = RefreshState::Failed(message);
     }
@@ -208,6 +217,12 @@ impl App {
         match &self.refresh {
             RefreshState::Idle => text.push_str(" · Ctrl-R refresh"),
             RefreshState::Running => text.push_str(" · refreshing…"),
+            RefreshState::CacheWriteFailed(message) => {
+                let first_line = message.lines().next().unwrap_or("");
+                text.push_str(&format!(
+                    " · schema updated but the cache could not be written: {first_line} · Ctrl-R refresh"
+                ));
+            }
             RefreshState::Failed(message) => {
                 let first_line = message.lines().next().unwrap_or("");
                 text.push_str(&format!(" · refresh failed: {first_line} · Ctrl-R retry"));
@@ -382,6 +397,22 @@ mod tests {
         assert!(app.detail.is_none());
         assert_eq!(app.hits.len(), 5);
         assert!(app.status(5_000).0.contains("<1m"));
+    }
+
+    #[test]
+    fn unsaved_refresh_applies_the_schema_and_reports_the_write_error() {
+        let mut app = app();
+        ctrl(&mut app, 'r');
+        let mut response: IntrospectionResponse = serde_json::from_str(FIXTURE).unwrap();
+        response.data.schema.types.truncate(3);
+        let expected = search::search(&response.data.schema, "").len();
+        app.apply_refresh_unsaved(response.data.schema, 5_000, "disk full\nmore".to_string());
+        assert_eq!(app.hits.len(), expected);
+        assert!(expected < 10);
+        let (text, _) = app.status(5_000);
+        assert!(text.contains("schema updated but the cache could not be written: disk full"));
+        assert!(!text.contains("more"));
+        assert_eq!(ctrl(&mut app, 'r'), Action::Refresh);
     }
 
     #[test]
