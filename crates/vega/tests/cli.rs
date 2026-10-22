@@ -26,8 +26,8 @@ fn vega(cache: &TempDir, args: &[&str]) -> Output {
         .args(args)
         .env("XDG_CACHE_HOME", cache.path())
         .env("XDG_CONFIG_HOME", cache.path().join("config"))
-        .env("GRAPHQL_URI", URI)
-        .env_remove("GRAPHQL_KEY")
+        .env("VEGA_GRAPHQL_URI", URI)
+        .env_remove("VEGA_GRAPHQL_KEY")
         .output()
         .unwrap()
 }
@@ -118,12 +118,41 @@ fn missing_endpoint_explains_how_to_set_one() {
         .args(["--search", "x"])
         .env("XDG_CACHE_HOME", cache.path())
         .env("XDG_CONFIG_HOME", cache.path().join("config"))
-        .env_remove("GRAPHQL_URI")
-        .env_remove("GRAPHQL_KEY")
+        .env_remove("VEGA_GRAPHQL_URI")
+        .env_remove("VEGA_GRAPHQL_KEY")
         .output()
         .unwrap();
     assert!(!out.status.success());
     assert!(stderr(&out).contains("--uri"));
+}
+
+#[test]
+fn the_unprefixed_endpoint_variable_is_not_read() {
+    let cache = seeded_cache(60);
+    let out = Command::new(env!("CARGO_BIN_EXE_vega"))
+        .args(["--search", "x"])
+        .env("XDG_CACHE_HOME", cache.path())
+        .env("XDG_CONFIG_HOME", cache.path().join("config"))
+        .env("GRAPHQL_URI", URI)
+        .env_remove("VEGA_GRAPHQL_URI")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("VEGA_GRAPHQL_URI"));
+}
+
+#[test]
+fn the_prefixed_endpoint_variable_is_read() {
+    let cache = seeded_cache(60);
+    let out = Command::new(env!("CARGO_BIN_EXE_vega"))
+        .args(["--search", "userread"])
+        .env("XDG_CACHE_HOME", cache.path())
+        .env("XDG_CONFIG_HOME", cache.path().join("config"))
+        .env_remove("GRAPHQL_URI")
+        .env("VEGA_GRAPHQL_URI", URI)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
 }
 
 #[test]

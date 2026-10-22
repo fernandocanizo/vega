@@ -31,7 +31,7 @@ impl std::fmt::Debug for Settings {
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error(
-        "no GraphQL endpoint configured: pass --uri, set GRAPHQL_URI, or add `uri` to config.toml"
+        "no GraphQL endpoint configured: pass --uri, set VEGA_GRAPHQL_URI, or add `uri` to config.toml"
     )]
     MissingUri,
     #[error("cannot read {path}: {source}")]
@@ -126,7 +126,7 @@ mod tests {
         let err = resolve_settings(None, None, None, FileConfig::default()).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("--uri"));
-        assert!(message.contains("GRAPHQL_URI"));
+        assert!(message.contains("VEGA_GRAPHQL_URI"));
         assert!(message.contains("config.toml"));
     }
 
