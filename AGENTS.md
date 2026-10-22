@@ -39,6 +39,12 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 - Say what the commit does. Never reference plans, specs, tasks, steps or sections, and never add co-author, "generated with" or any other AI attribution lines.
 - The `githooks/commit-msg` hook rejects messages that break these rules. Enable hooks once with `just hooks`.
 
+## Versioning
+
+- Semantic versioning, kept in one place: `version` under `[workspace.package]` in the root `Cargo.toml`, plus the `vega-core` dependency version in `crates/vega/Cargo.toml`, and `Cargo.lock`.
+- Every new pull request bumps the minor version, in its own `chore: bump the version to X.Y.0` commit made when the work is ready for review.
+- The maintainer bumps the major version. The patch version is for bug fixes and tiny changes and is also managed by the maintainer; do not bump it.
+
 ## Rules that must not be broken
 
 - The API key comes only from the `VEGA_GRAPHQL_KEY` environment variable. Never write it to disk, the cache, logs or error messages, and never add a CLI flag for it.
