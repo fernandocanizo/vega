@@ -116,7 +116,7 @@ impl App {
                 self.hit_index = (self.hit_index + 1).min(self.hits.len().saturating_sub(1));
             }
             KeyCode::Up => self.hit_index = self.hit_index.saturating_sub(1),
-            KeyCode::Enter => self.open_highlighted_hit(),
+            KeyCode::Enter | KeyCode::Right => self.open_highlighted_hit(),
             _ => {}
         }
     }
@@ -127,12 +127,12 @@ impl App {
         };
         match code {
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Esc | KeyCode::Backspace => self.go_back(),
+            KeyCode::Esc | KeyCode::Backspace | KeyCode::Left => self.go_back(),
             KeyCode::Down => {
                 view.selected = (view.selected + 1).min(view.detail.nav.len().saturating_sub(1));
             }
             KeyCode::Up => view.selected = view.selected.saturating_sub(1),
-            KeyCode::Enter => self.follow_selected(),
+            KeyCode::Enter | KeyCode::Right => self.follow_selected(),
             _ => {}
         }
     }
@@ -340,6 +340,43 @@ mod tests {
         press(&mut app, KeyCode::Backspace);
         assert_eq!(title(&app), None);
         assert_eq!(app.query, "userread");
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn right_opens_and_follows_and_left_walks_back() {
+        let mut app = app();
+        type_text(&mut app, "userread");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(title(&app), Some("Query.userRead(id: ID!): User"));
+
+        press(&mut app, KeyCode::Right);
+        assert_eq!(title(&app), Some("User (OBJECT)"));
+
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(title(&app), Some("Role (ENUM)"));
+
+        press(&mut app, KeyCode::Left);
+        assert_eq!(title(&app), Some("User (OBJECT)"));
+        press(&mut app, KeyCode::Left);
+        assert_eq!(title(&app), Some("Query.userRead(id: ID!): User"));
+        press(&mut app, KeyCode::Left);
+        assert_eq!(title(&app), None);
+        assert_eq!(app.query, "userread");
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn left_in_the_search_list_does_nothing() {
+        let mut app = app();
+        type_text(&mut app, "user");
+        let hits = app.hits.len();
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.query, "user");
+        assert_eq!(app.hits.len(), hits);
+        assert!(app.detail.is_none());
         assert!(!app.should_quit);
     }
 

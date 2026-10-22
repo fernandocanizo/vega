@@ -42,7 +42,7 @@ fn draw_search(frame: &mut Frame, area: Rect, app: &App) {
     let title = if app.detail.is_some() {
         "Search"
     } else {
-        "Search (type to filter · Enter open · Esc quit)"
+        "Search (type to filter · Enter/→ open · Esc quit)"
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     frame.render_widget(Paragraph::new(app.query.as_str()).block(block), area);
@@ -91,7 +91,7 @@ fn draw_detail(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let title = if selected.is_some() {
-        "Detail (Enter follow · Backspace back · q quit)"
+        "Detail (Enter/→ follow · Bksp/← back · q quit)"
     } else {
         "Preview"
     };
