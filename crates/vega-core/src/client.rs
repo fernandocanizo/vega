@@ -96,9 +96,13 @@ pub fn fetch_introspection(
     let status = response.status();
     let body = response.text()?;
     if !status.is_success() {
+        let mut body: String = body.chars().take(300).collect();
+        if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+            body = body.replace(key, "***");
+        }
         return Err(ClientError::Status {
             status: status.as_u16(),
-            body: body.chars().take(300).collect(),
+            body,
         });
     }
     parse_response(&body)
