@@ -1,12 +1,13 @@
 //! Pure application state for the TUI: keys in, state out. No terminal access.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use vega_core::cache::{format_age, is_stale};
+use vega_core::querygen::{self, GenerateError, GeneratedQuery};
 use vega_core::schema::Schema;
 use vega_core::search::{self, Hit};
-use vega_core::selection::{self, NodeKind, Path, Row, TreeRoot};
+use vega_core::selection::{self, NodeKind, Path, Row, Seg, Selection, TreeRoot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -45,6 +46,7 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("↑ / ↓", "Move through the tree"),
     ("→", "Expand a node, or step into it"),
     ("←", "Collapse a node, or go to its parent"),
+    ("Space", "Select or unselect a field"),
     ("Esc", "Back to the results"),
     ("q", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
@@ -58,6 +60,7 @@ pub struct DesignState {
     pub root: TreeRoot,
     pub expanded: BTreeSet<Path>,
     pub cursor: usize,
+    pub selection: Selection,
 }
 
 impl DesignState {
@@ -68,7 +71,13 @@ impl DesignState {
             root,
             expanded,
             cursor: 0,
+            selection: Selection::default(),
         }
+    }
+
+    /// A type tree is only for reading: nothing can be selected in it.
+    pub fn read_only(&self) -> bool {
+        matches!(self.root, TreeRoot::Type(_))
     }
 }
 
@@ -80,6 +89,7 @@ pub struct App {
     pub hits: Vec<Hit>,
     pub hit_index: usize,
     pub design: Option<DesignState>,
+    sessions: HashMap<String, DesignState>,
     pub refresh: RefreshState,
     pub should_quit: bool,
     pub help_open: bool,
@@ -106,6 +116,7 @@ impl App {
             hits,
             hit_index: 0,
             design: None,
+            sessions: HashMap::new(),
             refresh: RefreshState::Idle,
             should_quit: false,
             help_open: false,
@@ -180,7 +191,8 @@ impl App {
     fn handle_design_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Esc => self.design = None,
+            KeyCode::Esc => self.leave_design(),
+            KeyCode::Char(' ') => self.toggle_under_cursor(),
             KeyCode::Down => self.move_cursor(1),
             KeyCode::Up => self.move_cursor(-1),
             KeyCode::Right => self.expand_or_step_in(),
@@ -199,8 +211,48 @@ impl App {
             return;
         };
         if let Some(root) = TreeRoot::parse(&self.schema, &hit.path) {
-            self.design = Some(DesignState::new(root));
+            let state = self
+                .sessions
+                .remove(&root.key())
+                .unwrap_or_else(|| DesignState::new(root));
+            self.design = Some(state);
         }
+    }
+
+    fn leave_design(&mut self) {
+        if let Some(design) = self.design.take() {
+            self.sessions.insert(design.root.key(), design);
+        }
+    }
+
+    fn toggle_under_cursor(&mut self) {
+        let rows = self.design_rows();
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
+        if design.read_only() {
+            return;
+        }
+        if let Some(row) = rows.get(design.cursor) {
+            design.selection.toggle_node(&row.node);
+        }
+    }
+
+    /// The query for the current selection; `None` outside Design or for a type tree.
+    pub fn generated_query(&self) -> Option<Result<GeneratedQuery, GenerateError>> {
+        let design = self.design.as_ref()?;
+        let operation = design.root.operation()?;
+        Some(querygen::generate(
+            &self.schema,
+            operation,
+            &design.selection,
+        ))
+    }
+
+    pub fn is_selected(&self, path: &[Seg]) -> bool {
+        self.design
+            .as_ref()
+            .is_some_and(|design| design.selection.contains(path))
     }
 
     fn move_cursor(&mut self, delta: isize) {
@@ -298,6 +350,7 @@ impl App {
         self.schema = schema;
         self.fetched_at = fetched_at;
         self.design = None;
+        self.sessions.clear();
         self.refresh = RefreshState::Idle;
         self.rerun_search();
     }
@@ -345,6 +398,7 @@ mod tests {
     use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use vega_core::schema::IntrospectionResponse;
+    use vega_core::selection::Seg;
 
     const FIXTURE: &str = include_str!("../../../vega-core/tests/fixtures/introspection.json");
 
@@ -836,5 +890,121 @@ mod tests {
         let response: IntrospectionResponse = serde_json::from_str(DESIGN_FIXTURE).unwrap();
         app.apply_refresh_ok(response.data.schema, 5_000);
         assert!(app.design.is_none());
+    }
+
+    fn query_text(app: &App) -> String {
+        app.generated_query().unwrap().unwrap().text
+    }
+
+    #[test]
+    fn space_toggles_leaves_and_the_query_follows() {
+        let mut app = design_app();
+        open_me(&mut app);
+        assert!(matches!(
+            app.generated_query(),
+            Some(Err(vega_core::querygen::GenerateError::EmptySelection))
+        ));
+
+        press(&mut app, KeyCode::Down); // id
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    id\n  }\n}");
+        assert!(app.is_selected(&[Seg::Field("id".to_string())]));
+
+        press(&mut app, KeyCode::Down); // name
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(
+            query_text(&app),
+            "query Me {\n  me {\n    id\n    name\n  }\n}"
+        );
+
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char(' ')); // unselect id
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    name\n  }\n}");
+    }
+
+    #[test]
+    fn space_on_an_object_does_nothing() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Char(' ')); // the root object
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Down); // friends
+        }
+        press(&mut app, KeyCode::Char(' '));
+        assert!(matches!(app.generated_query(), Some(Err(_))));
+    }
+
+    #[test]
+    fn selecting_a_nested_leaf_includes_its_ancestors_and_variables() {
+        let mut app = design_app();
+        open_me(&mut app);
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down); // posts(first: Int!)
+        }
+        press(&mut app, KeyCode::Right); // expand posts
+        press(&mut app, KeyCode::Down); // id
+        press(&mut app, KeyCode::Char(' '));
+        let query = app.generated_query().unwrap().unwrap();
+        assert_eq!(
+            query.text,
+            "query Me($first: Int!) {\n  me {\n    posts(first: $first) {\n      id\n    }\n  }\n}"
+        );
+        assert_eq!(query.variables.len(), 1);
+    }
+
+    #[test]
+    fn scalar_operations_generate_without_a_selection() {
+        let mut app = design_app();
+        type_text(&mut app, "version");
+        press(&mut app, KeyCode::Enter);
+        let query = app.generated_query().unwrap().unwrap();
+        assert_eq!(query.text, "query Version {\n  version\n}");
+    }
+
+    #[test]
+    fn type_roots_are_read_only() {
+        let mut app = design_app();
+        type_text(&mut app, "postinput");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.generated_query().is_none());
+        assert!(!app.is_selected(&[Seg::Field("title".to_string())]));
+        assert!(app.design.as_ref().unwrap().read_only());
+    }
+
+    #[test]
+    fn selection_expansion_and_cursor_survive_leaving_and_reentering() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // id
+        press(&mut app, KeyCode::Down); // name, cursor 2
+        press(&mut app, KeyCode::Esc);
+        assert!(app.design.is_none());
+
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.design.as_ref().unwrap().cursor, 2);
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    id\n  }\n}");
+    }
+
+    #[test]
+    fn a_refresh_clears_the_stored_sessions() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Esc);
+        let response: IntrospectionResponse = serde_json::from_str(DESIGN_FIXTURE).unwrap();
+        app.apply_refresh_ok(response.data.schema, 5_000);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.generated_query(), Some(Err(_))));
+    }
+
+    #[test]
+    fn help_in_design_mentions_space() {
+        let mut app = design_app();
+        open_me(&mut app);
+        assert!(app.help_keys().iter().any(|(keys, _)| *keys == "Space"));
     }
 }

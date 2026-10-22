@@ -21,7 +21,19 @@ pub fn draw(frame: &mut Frame, app: &App, now: u64) {
         draw_status(frame, rows[0], app, now);
         let tree = app.design_rows();
         let cursor = app.design.as_ref().map(|design| design.cursor);
-        draw_details(frame, rows[1], app, &tree, cursor);
+        let is_operation = app
+            .design
+            .as_ref()
+            .is_some_and(|design| !design.read_only());
+        if is_operation {
+            let columns =
+                Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(rows[1]);
+            draw_details(frame, columns[0], app, &tree, cursor);
+            draw_query(frame, columns[1], app);
+        } else {
+            draw_details(frame, rows[1], app, &tree, cursor);
+        }
     } else {
         let rows = Layout::vertical([
             Constraint::Length(1),
@@ -144,7 +156,7 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App, rows: &[Row], cursor: 
     if rows.is_empty() {
         frame.render_widget(Paragraph::new("No matches").block(block), parts[0]);
     } else {
-        let items: Vec<ListItem> = rows.iter().map(tree_item).collect();
+        let items: Vec<ListItem> = rows.iter().map(|row| tree_item(app, row)).collect();
         let list = List::new(items)
             .block(block)
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
@@ -162,12 +174,47 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App, rows: &[Row], cursor: 
     );
 }
 
-fn tree_item(row: &Row) -> ListItem<'static> {
+/// The generated query over the variables it needs.
+fn draw_query(frame: &mut Frame, area: Rect, app: &App) {
+    let parts =
+        Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)]).split(area);
+    let query = app.generated_query();
+
+    let text = match &query {
+        Some(Ok(generated)) => generated.text.clone(),
+        Some(Err(_)) | None => "Select fields with Space to build the query".to_string(),
+    };
+    let block = Block::default().borders(Borders::ALL).title("Query");
+    frame.render_widget(Paragraph::new(text).block(block), parts[0]);
+
+    let variables = match &query {
+        Some(Ok(generated)) if !generated.variables.is_empty() => generated
+            .variables
+            .iter()
+            .map(|v| format!("${}: {}", v.name, v.ty))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => "No variables".to_string(),
+    };
+    let block = Block::default().borders(Borders::ALL).title("Variables");
+    frame.render_widget(Paragraph::new(variables).block(block), parts[1]);
+}
+
+fn tree_item(app: &App, row: &Row) -> ListItem<'static> {
     let marker = match row.node.kind {
         NodeKind::Composite if row.expanded => "▾ ",
         NodeKind::Composite => "▸ ",
         NodeKind::Recursive => "↻ ",
-        NodeKind::Leaf => "• ",
+        NodeKind::Leaf => match &app.design {
+            Some(design) if !design.read_only() => {
+                if app.is_selected(&row.node.path) {
+                    "☑ "
+                } else {
+                    "☐ "
+                }
+            }
+            _ => "• ",
+        },
     };
     ListItem::new(Line::raw(format!(
         "{}{marker}{}",
@@ -278,6 +325,76 @@ mod tests {
         let mut app = app();
         app.help_open = true;
         for (w, h) in [(20, 5), (1, 1), (0, 0), (3, 40)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|frame| draw(frame, &app, 1_000)).unwrap();
+        }
+    }
+
+    const DESIGN_FIXTURE: &str = include_str!("../../../vega-core/tests/fixtures/design.json");
+
+    fn design_app_on(query: &str) -> App {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let response: IntrospectionResponse = serde_json::from_str(DESIGN_FIXTURE).unwrap();
+        let mut app = App::new(response.data.schema, "https://example.com/graphql", 1_000);
+        for c in query.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.design.is_some());
+        app
+    }
+
+    fn press_key(app: &mut App, code: ratatui::crossterm::event::KeyCode) {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn an_operation_design_shows_query_and_variables_panes() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = design_app_on("me");
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("Query"));
+        assert!(text.contains("Variables"));
+        assert!(text.contains("Select fields with Space"));
+        assert!(text.contains("No variables"));
+        assert!(text.contains("☐ id: ID!"));
+
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Char(' '));
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("☑ id: ID!"));
+        assert!(text.contains("query Me {"));
+        assert!(!text.contains("Select fields with Space"));
+    }
+
+    #[test]
+    fn required_arguments_are_listed_as_variables() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = design_app_on("node");
+        press_key(&mut app, KeyCode::Down); // id
+        press_key(&mut app, KeyCode::Char(' '));
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("$id: ID!"));
+    }
+
+    #[test]
+    fn a_type_design_has_no_query_or_variables_panes_and_no_checkboxes() {
+        let app = design_app_on("postinput");
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("Details"));
+        assert!(text.contains("• title: String!"));
+        assert!(!text.contains("Variables"));
+        assert!(!text.contains("☐"));
+    }
+
+    #[test]
+    fn selection_panes_do_not_panic_on_tiny_terminals() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = design_app_on("me");
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Char(' '));
+        for (w, h) in [(20, 5), (1, 1), (0, 0), (3, 40), (80, 24)] {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
             terminal.draw(|frame| draw(frame, &app, 1_000)).unwrap();
         }
