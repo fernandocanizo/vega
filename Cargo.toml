@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/vega-core", "crates/vega"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
