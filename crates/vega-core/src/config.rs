@@ -13,10 +13,19 @@ pub struct FileConfig {
     pub uri: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Settings {
     pub uri: String,
     pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Settings")
+            .field("uri", &self.uri)
+            .field("api_key", &self.api_key.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +82,17 @@ pub fn load_file_config(config_dir: &Path) -> Result<FileConfig, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_output_hides_the_api_key() {
+        let settings = Settings {
+            uri: "https://x.example.com/graphql".into(),
+            api_key: Some("super-secret".into()),
+        };
+        let text = format!("{settings:?}");
+        assert!(!text.contains("super-secret"), "{text}");
+        assert!(text.contains("Some(\"***\")"), "{text}");
+    }
 
     fn file(uri: &str) -> FileConfig {
         FileConfig {
