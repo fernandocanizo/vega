@@ -28,9 +28,14 @@ pub struct Cli {
     pub query: Option<String>,
 
     /// Fields to select with --query: comma-separated paths such as id,friends.name
-    /// (union or interface branches as on:Type, e.g. on:User.name)
+    /// (union or interface branches as on:Type, optional arguments as arg:name,
+    /// e.g. friends.arg:first)
     #[arg(long, value_name = "PATHS", requires = "query")]
     pub select: Option<String>,
+
+    /// Set a variable of the --query operation, for example --var id=42 (repeatable)
+    #[arg(long = "var", value_name = "NAME=VALUE", requires = "query")]
+    pub vars: Vec<String>,
 
     /// Print JSON on stdout for --search, --describe and --query
     #[arg(long)]

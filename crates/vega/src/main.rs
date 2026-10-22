@@ -6,8 +6,10 @@ mod tui;
 use anyhow::Context;
 use clap::Parser;
 use vega_core::config::{self, FileConfig};
+use vega_core::querygen::GeneratedQuery;
 use vega_core::schema::Schema;
 use vega_core::selection::{self, OperationRef, Selection};
+use vega_core::variables::{self, State, Values};
 use vega_core::{cache, describe, querygen, search, xdg};
 
 use crate::cli::Cli;
@@ -65,7 +67,7 @@ fn main() -> anyhow::Result<()> {
                 print!("{}", describe::render_text(&detail));
             }
         } else if let Some(target) = &cli.query {
-            print_query(schema, target, cli.select.as_deref(), cli.json)?;
+            print_query(schema, target, cli.select.as_deref(), &cli.vars, cli.json)?;
         }
         return Ok(());
     }
@@ -77,6 +79,7 @@ fn print_query(
     schema: &Schema,
     target: &str,
     select: Option<&str>,
+    vars: &[String],
     json: bool,
 ) -> anyhow::Result<()> {
     let operation = OperationRef::parse(schema, target).with_context(|| {
@@ -87,10 +90,52 @@ fn print_query(
         None => Selection::default(),
     };
     let query = querygen::generate(schema, &operation, &selection)?;
+    let values = parse_vars(&query, vars)?;
+    let mut states = Vec::new();
+    for def in &query.variables {
+        let typed = values.get(&def.path).map(String::as_str);
+        let state = variables::state(schema, def, typed);
+        // A missing required value is only listed (running is what needs it).
+        if let (State::Invalid(reason), Some(_)) = (&state, typed) {
+            anyhow::bail!("variable ${}: {reason}", def.name);
+        }
+        states.push(state);
+    }
     if json {
-        println!("{}", serde_json::to_string_pretty(&query)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output::query_json(&query, &states)?)?
+        );
     } else {
-        print!("{}", output::query_text(&query));
+        print!("{}", output::query_text(&query, &states));
     }
     Ok(())
+}
+
+/// Matches each `NAME=VALUE` with the variable of that name in the generated query.
+fn parse_vars(query: &GeneratedQuery, vars: &[String]) -> anyhow::Result<Values> {
+    let mut values = Values::new();
+    for item in vars {
+        let (name, value) = item
+            .split_once('=')
+            .with_context(|| format!("--var `{item}`: expected NAME=VALUE"))?;
+        let name = name.trim_start_matches('$');
+        let def = query
+            .variables
+            .iter()
+            .find(|variable| variable.name == name)
+            .with_context(|| {
+                let known: Vec<&str> = query.variables.iter().map(|v| v.name.as_str()).collect();
+                format!(
+                    "--var `{name}`: no such variable in this query (variables: {})",
+                    if known.is_empty() {
+                        "none".to_string()
+                    } else {
+                        known.join(", ")
+                    }
+                )
+            })?;
+        values.insert(def.path.clone(), value.to_string());
+    }
+    Ok(values)
 }
