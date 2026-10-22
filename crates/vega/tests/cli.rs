@@ -241,3 +241,112 @@ fn query_warns_about_a_stale_cache_on_stderr_only() {
     assert!(stderr(&out).contains("warning"));
     assert!(serde_json::from_str::<serde_json::Value>(&stdout(&out)).is_ok());
 }
+
+#[test]
+fn var_sets_the_value_shown_next_to_the_variable() {
+    let cache = seeded_cache(60);
+    let out = vega(
+        &cache,
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id,name",
+            "--var",
+            "id=42",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "query UserRead($id: ID!) {\n  userRead(id: $id) {\n    id\n    name\n  }\n}\n\nVariables:\n  $id: ID! = 42\n"
+    );
+    assert_eq!(stderr(&out), "");
+}
+
+#[test]
+fn var_value_appears_in_the_json_output() {
+    let cache = seeded_cache(60);
+    let out = vega(
+        &cache,
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id",
+            "--var",
+            "id=42",
+            "--json",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["variables"][0]["name"], "id");
+    assert_eq!(json["variables"][0]["value"], "42");
+}
+
+#[test]
+fn select_can_opt_an_optional_argument_in() {
+    let cache = seeded_cache(60);
+    let out = vega(
+        &cache,
+        &[
+            "--query",
+            "Query.userSearch",
+            "--select",
+            "id,arg:term",
+            "--var",
+            "term=bob",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).starts_with(
+        "query UserSearch($term: String) {\n  userSearch(term: $term) {\n    id\n  }\n}"
+    ));
+    assert!(stdout(&out).contains("$term: String = bob"));
+}
+
+#[test]
+fn var_for_an_unknown_variable_fails_with_a_message() {
+    let cache = seeded_cache(60);
+    let out = vega(
+        &cache,
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id",
+            "--var",
+            "nope=1",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("no such variable"));
+    assert_eq!(stdout(&out), "");
+}
+
+#[test]
+fn var_with_an_invalid_value_fails_and_prints_nothing() {
+    let cache = seeded_cache(60);
+    let out = vega(
+        &cache,
+        &[
+            "--query",
+            "Mutation.userCreate",
+            "--select",
+            "id",
+            "--var",
+            "input=notjson",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("not valid JSON"));
+    assert_eq!(stdout(&out), "");
+}
+
+#[test]
+fn var_requires_query() {
+    let cache = seeded_cache(60);
+    let out = vega(&cache, &["--var", "id=1"]);
+    assert!(!out.status.success());
+}
