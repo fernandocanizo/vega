@@ -1,10 +1,12 @@
 //! Pure application state for the TUI: keys in, state out. No terminal access.
 
+use std::collections::BTreeSet;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use vega_core::cache::{format_age, is_stale};
-use vega_core::describe::{self, Detail};
 use vega_core::schema::Schema;
 use vega_core::search::{self, Hit};
+use vega_core::selection::{self, NodeKind, Path, Row, TreeRoot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -28,24 +30,47 @@ pub enum StatusLevel {
     Stale,
 }
 
-#[derive(Debug)]
-pub struct DetailView {
-    pub detail: Detail,
-    pub selected: usize,
-}
-
-/// Every mapped hotkey as (keys, description); rendered by the help modal.
-pub const HELP_KEYS: &[(&str, &str)] = &[
-    ("↑ / ↓", "Move the selection"),
-    ("Enter / →", "Open or follow the selected item"),
-    ("Backspace / ←", "Go back (detail view)"),
-    ("Esc", "Go back; quit from the search list"),
-    ("q", "Quit (detail view)"),
+/// Hotkeys in Browse mode as (keys, description); shown by the help modal.
+pub const BROWSE_KEYS: &[(&str, &str)] = &[
+    ("↑ / ↓", "Move through the results"),
+    ("Enter / →", "Open the highlighted item as a tree"),
+    ("Esc", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
     ("? / F1", "Show or hide this help"),
-    ("h", "Show or hide this help (detail view)"),
     ("Ctrl-C", "Quit"),
 ];
+
+/// Hotkeys in Design mode.
+pub const DESIGN_KEYS: &[(&str, &str)] = &[
+    ("↑ / ↓", "Move through the tree"),
+    ("→", "Expand a node, or step into it"),
+    ("←", "Collapse a node, or go to its parent"),
+    ("Esc", "Back to the results"),
+    ("q", "Quit"),
+    ("Ctrl-R", "Refresh the schema"),
+    ("h / ? / F1", "Show or hide this help"),
+    ("Ctrl-C", "Quit"),
+];
+
+/// The tree being explored: which root, which nodes are expanded, where the cursor is.
+#[derive(Debug, Clone)]
+pub struct DesignState {
+    pub root: TreeRoot,
+    pub expanded: BTreeSet<Path>,
+    pub cursor: usize,
+}
+
+impl DesignState {
+    fn new(root: TreeRoot) -> Self {
+        let mut expanded = BTreeSet::new();
+        expanded.insert(Path::new());
+        Self {
+            root,
+            expanded,
+            cursor: 0,
+        }
+    }
+}
 
 pub struct App {
     schema: Schema,
@@ -54,8 +79,7 @@ pub struct App {
     pub query: String,
     pub hits: Vec<Hit>,
     pub hit_index: usize,
-    pub detail: Option<DetailView>,
-    back_stack: Vec<DetailView>,
+    pub design: Option<DesignState>,
     pub refresh: RefreshState,
     pub should_quit: bool,
     pub help_open: bool,
@@ -81,8 +105,7 @@ impl App {
             query: String::new(),
             hits,
             hit_index: 0,
-            detail: None,
-            back_stack: Vec::new(),
+            design: None,
             refresh: RefreshState::Idle,
             should_quit: false,
             help_open: false,
@@ -111,15 +134,15 @@ impl App {
         }
         let opens_help = match key.code {
             KeyCode::F(1) | KeyCode::Char('?') => true,
-            KeyCode::Char('h') => self.detail.is_some(),
+            KeyCode::Char('h') => self.design.is_some(),
             _ => false,
         };
         if opens_help {
             self.help_open = true;
             return Action::None;
         }
-        if self.detail.is_some() {
-            self.handle_detail_key(key.code);
+        if self.design.is_some() {
+            self.handle_design_key(key.code);
         } else {
             self.handle_search_key(key.code);
         }
@@ -149,23 +172,19 @@ impl App {
                 self.hit_index = (self.hit_index + 1).min(self.hits.len().saturating_sub(1));
             }
             KeyCode::Up => self.hit_index = self.hit_index.saturating_sub(1),
-            KeyCode::Enter | KeyCode::Right => self.open_highlighted_hit(),
+            KeyCode::Enter | KeyCode::Right => self.start_design(),
             _ => {}
         }
     }
 
-    fn handle_detail_key(&mut self, code: KeyCode) {
-        let Some(view) = self.detail.as_mut() else {
-            return;
-        };
+    fn handle_design_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Esc | KeyCode::Backspace | KeyCode::Left => self.go_back(),
-            KeyCode::Down => {
-                view.selected = (view.selected + 1).min(view.detail.nav.len().saturating_sub(1));
-            }
-            KeyCode::Up => view.selected = view.selected.saturating_sub(1),
-            KeyCode::Enter | KeyCode::Right => self.follow_selected(),
+            KeyCode::Esc => self.design = None,
+            KeyCode::Down => self.move_cursor(1),
+            KeyCode::Up => self.move_cursor(-1),
+            KeyCode::Right => self.expand_or_step_in(),
+            KeyCode::Left => self.collapse_or_go_up(),
             _ => {}
         }
     }
@@ -175,58 +194,110 @@ impl App {
         self.hit_index = 0;
     }
 
-    fn open_highlighted_hit(&mut self) {
+    fn start_design(&mut self) {
         let Some(hit) = self.hits.get(self.hit_index) else {
             return;
         };
-        if let Ok(detail) = describe::detail(&self.schema, &hit.path) {
-            self.detail = Some(DetailView {
-                detail,
-                selected: 0,
-            });
+        if let Some(root) = TreeRoot::parse(&self.schema, &hit.path) {
+            self.design = Some(DesignState::new(root));
         }
     }
 
-    fn follow_selected(&mut self) {
-        let Some(view) = &self.detail else {
-            return;
-        };
-        let Some(target) = view
-            .detail
-            .nav
-            .get(view.selected)
-            .and_then(|item| item.target.clone())
-        else {
-            return;
-        };
-        let Ok(next) = describe::detail(&self.schema, &target) else {
-            return;
-        };
-        let next = DetailView {
-            detail: next,
-            selected: 0,
-        };
-        if let Some(current) = self.detail.replace(next) {
-            self.back_stack.push(current);
+    fn move_cursor(&mut self, delta: isize) {
+        let last = self.design_rows().len().saturating_sub(1);
+        if let Some(design) = self.design.as_mut() {
+            design.cursor = design.cursor.saturating_add_signed(delta).min(last);
         }
     }
 
-    /// Pops the history; with nothing left, returns to the search list.
-    fn go_back(&mut self) {
-        self.detail = self.back_stack.pop();
+    fn expand_or_step_in(&mut self) {
+        let rows = self.design_rows();
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
+        let Some(row) = rows.get(design.cursor) else {
+            return;
+        };
+        if row.node.kind != NodeKind::Composite {
+            return;
+        }
+        if !row.expanded {
+            design.expanded.insert(row.node.path.clone());
+        } else if rows
+            .get(design.cursor + 1)
+            .is_some_and(|next| next.depth > row.depth)
+        {
+            design.cursor += 1;
+        }
     }
 
-    /// Detail of the highlighted search hit, shown while no detail is open.
-    pub fn preview(&self) -> Option<Detail> {
-        let hit = self.hits.get(self.hit_index)?;
-        describe::detail(&self.schema, &hit.path).ok()
+    fn collapse_or_go_up(&mut self) {
+        let rows = self.design_rows();
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
+        let Some(row) = rows.get(design.cursor) else {
+            return;
+        };
+        if row.expanded {
+            design.expanded.remove(&row.node.path);
+        } else if let Some(parent) = rows[..design.cursor]
+            .iter()
+            .rposition(|candidate| candidate.depth + 1 == row.depth)
+        {
+            design.cursor = parent;
+        }
+    }
+
+    /// The visible rows of the tree being designed (empty in Browse mode).
+    pub fn design_rows(&self) -> Vec<Row> {
+        match &self.design {
+            Some(design) => selection::rows(&self.schema, &design.root, &design.expanded),
+            None => Vec::new(),
+        }
+    }
+
+    /// Rows for the Details pane in Browse mode: the highlighted hit, root expanded.
+    pub fn preview_rows(&self) -> Vec<Row> {
+        let Some(hit) = self.hits.get(self.hit_index) else {
+            return Vec::new();
+        };
+        let Some(root) = TreeRoot::parse(&self.schema, &hit.path) else {
+            return Vec::new();
+        };
+        let mut expanded = BTreeSet::new();
+        expanded.insert(Path::new());
+        selection::rows(&self.schema, &root, &expanded)
+    }
+
+    /// Description of the node under the cursor (Design) or of the highlighted hit (Browse).
+    pub fn current_description(&self) -> String {
+        match &self.design {
+            Some(design) => self
+                .design_rows()
+                .get(design.cursor)
+                .map(|row| row.node.description.clone())
+                .unwrap_or_default(),
+            None => self
+                .preview_rows()
+                .first()
+                .map(|row| row.node.description.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub fn help_keys(&self) -> &'static [(&'static str, &'static str)] {
+        if self.design.is_some() {
+            DESIGN_KEYS
+        } else {
+            BROWSE_KEYS
+        }
     }
 
     pub fn apply_refresh_ok(&mut self, schema: Schema, fetched_at: u64) {
         self.schema = schema;
         self.fetched_at = fetched_at;
-        self.detail = None;
-        self.back_stack.clear();
+        self.design = None;
         self.refresh = RefreshState::Idle;
         self.rerun_search();
     }
@@ -300,10 +371,6 @@ mod tests {
         }
     }
 
-    fn title(app: &App) -> Option<&str> {
-        app.detail.as_ref().map(|v| v.detail.title.as_str())
-    }
-
     #[test]
     fn starts_with_every_hit_listed() {
         assert_eq!(app().hits.len(), 10);
@@ -350,58 +417,6 @@ mod tests {
     }
 
     #[test]
-    fn enter_opens_follows_and_backspace_walks_back() {
-        let mut app = app();
-        type_text(&mut app, "userread");
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(title(&app), Some("Query.userRead(id: ID!): User"));
-
-        // First nav item is "returns User".
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(title(&app), Some("User (OBJECT)"));
-
-        // Down to `role: Role`, follow it.
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(title(&app), Some("Role (ENUM)"));
-
-        press(&mut app, KeyCode::Backspace);
-        assert_eq!(title(&app), Some("User (OBJECT)"));
-        press(&mut app, KeyCode::Esc);
-        assert_eq!(title(&app), Some("Query.userRead(id: ID!): User"));
-        press(&mut app, KeyCode::Backspace);
-        assert_eq!(title(&app), None);
-        assert_eq!(app.query, "userread");
-        assert!(!app.should_quit);
-    }
-
-    #[test]
-    fn right_opens_and_follows_and_left_walks_back() {
-        let mut app = app();
-        type_text(&mut app, "userread");
-        press(&mut app, KeyCode::Right);
-        assert_eq!(title(&app), Some("Query.userRead(id: ID!): User"));
-
-        press(&mut app, KeyCode::Right);
-        assert_eq!(title(&app), Some("User (OBJECT)"));
-
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Right);
-        assert_eq!(title(&app), Some("Role (ENUM)"));
-
-        press(&mut app, KeyCode::Left);
-        assert_eq!(title(&app), Some("User (OBJECT)"));
-        press(&mut app, KeyCode::Left);
-        assert_eq!(title(&app), Some("Query.userRead(id: ID!): User"));
-        press(&mut app, KeyCode::Left);
-        assert_eq!(title(&app), None);
-        assert_eq!(app.query, "userread");
-        assert!(!app.should_quit);
-    }
-
-    #[test]
     fn left_in_the_search_list_does_nothing() {
         let mut app = app();
         type_text(&mut app, "user");
@@ -409,14 +424,36 @@ mod tests {
         press(&mut app, KeyCode::Left);
         assert_eq!(app.query, "user");
         assert_eq!(app.hits.len(), hits);
-        assert!(app.detail.is_none());
+        assert!(app.design.is_none());
         assert!(!app.should_quit);
     }
 
-    fn open_detail(app: &mut App) {
+    const DESIGN_FIXTURE: &str = include_str!("../../../vega-core/tests/fixtures/design.json");
+
+    fn design_app() -> App {
+        let response: IntrospectionResponse = serde_json::from_str(DESIGN_FIXTURE).unwrap();
+        App::new(response.data.schema, "https://example.com/graphql", 1_000)
+    }
+
+    /// Opens the design view of `Query.me` in the design fixture app.
+    fn open_me(app: &mut App) {
+        type_text(app, "me");
+        assert_eq!(app.hits[0].path, "Query.me");
+        press(app, KeyCode::Enter);
+        assert!(app.design.is_some());
+    }
+
+    fn row_labels(app: &App) -> Vec<String> {
+        app.design_rows()
+            .iter()
+            .map(|r| r.node.label.clone())
+            .collect()
+    }
+
+    fn open_design(app: &mut App) {
         type_text(app, "userread");
         press(app, KeyCode::Enter);
-        assert!(app.detail.is_some());
+        assert!(app.design.is_some());
     }
 
     #[test]
@@ -427,7 +464,7 @@ mod tests {
             assert!(app.help_open);
 
             let mut app = self::app();
-            open_detail(&mut app);
+            open_design(&mut app);
             press(&mut app, code);
             assert!(app.help_open);
         }
@@ -443,17 +480,17 @@ mod tests {
     }
 
     #[test]
-    fn h_types_in_the_search_list_but_opens_help_in_a_detail_view() {
+    fn h_types_in_the_search_list_but_opens_help_in_design_mode() {
         let mut app = app();
         press(&mut app, KeyCode::Char('h'));
         assert_eq!(app.query, "h");
         assert!(!app.help_open);
 
         let mut app = self::app();
-        open_detail(&mut app);
+        open_design(&mut app);
         press(&mut app, KeyCode::Char('h'));
         assert!(app.help_open);
-        assert!(app.detail.is_some());
+        assert!(app.design.is_some());
     }
 
     #[test]
@@ -474,20 +511,20 @@ mod tests {
     }
 
     #[test]
-    fn esc_closes_only_the_help_in_a_detail_view() {
+    fn esc_closes_only_the_help_in_design_mode() {
         let mut app = app();
-        open_detail(&mut app);
+        open_design(&mut app);
         press(&mut app, KeyCode::Char('?'));
         press(&mut app, KeyCode::Esc);
         assert!(!app.help_open);
-        assert_eq!(title(&app), Some("Query.userRead(id: ID!): User"));
+        assert!(app.design.is_some());
         assert!(!app.should_quit);
     }
 
     #[test]
     fn other_keys_are_ignored_while_help_is_open() {
         let mut app = app();
-        open_detail(&mut app);
+        open_design(&mut app);
         press(&mut app, KeyCode::Char('?'));
         for code in [
             KeyCode::Down,
@@ -502,8 +539,8 @@ mod tests {
         }
         assert!(app.help_open);
         assert!(!app.should_quit);
-        assert_eq!(title(&app), Some("Query.userRead(id: ID!): User"));
-        assert_eq!(app.detail.as_ref().unwrap().selected, 0);
+        assert!(app.design.is_some());
+        assert_eq!(app.design.as_ref().unwrap().cursor, 0);
 
         let mut app = self::app();
         press(&mut app, KeyCode::F(1));
@@ -524,17 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn items_without_a_target_do_not_navigate() {
-        let mut app = app();
-        type_text(&mut app, "role");
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(title(&app), Some("Role (ENUM)"));
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(title(&app), Some("Role (ENUM)"));
-    }
-
-    #[test]
-    fn q_quits_from_a_detail_view() {
+    fn q_quits_in_design_mode() {
         let mut app = app();
         type_text(&mut app, "user");
         press(&mut app, KeyCode::Enter);
@@ -548,8 +575,8 @@ mod tests {
         type_text(&mut app, "zzz");
         assert!(app.hits.is_empty());
         press(&mut app, KeyCode::Enter);
-        assert!(app.detail.is_none());
-        assert!(app.preview().is_none());
+        assert!(app.design.is_none());
+        assert!(app.preview_rows().is_empty());
     }
 
     #[test]
@@ -578,7 +605,7 @@ mod tests {
         let response: IntrospectionResponse = serde_json::from_str(FIXTURE).unwrap();
         app.apply_refresh_ok(response.data.schema, 5_000);
         assert_eq!(app.refresh, RefreshState::Idle);
-        assert!(app.detail.is_none());
+        assert!(app.design.is_none());
         assert_eq!(app.hits.len(), 5);
         assert!(app.status(5_000).0.contains("<1m"));
     }
@@ -645,5 +672,169 @@ mod tests {
             "nexus.example.com"
         );
         assert_eq!(host_of("http://user@127.0.0.1:4000"), "127.0.0.1:4000");
+    }
+
+    #[test]
+    fn enter_and_right_open_the_highlighted_hit_with_its_root_expanded() {
+        for code in [KeyCode::Enter, KeyCode::Right] {
+            let mut app = design_app();
+            type_text(&mut app, "me");
+            press(&mut app, code);
+            let labels = row_labels(&app);
+            assert_eq!(labels.len(), 7);
+            assert_eq!(labels[0], "me: User");
+            assert_eq!(labels[1], "id: ID!");
+            assert_eq!(app.design.as_ref().unwrap().cursor, 0);
+        }
+    }
+
+    #[test]
+    fn a_type_hit_opens_the_same_tree() {
+        let mut app = design_app();
+        type_text(&mut app, "postinput");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            row_labels(&app),
+            ["PostInput (INPUT_OBJECT)", "title: String!"]
+        );
+    }
+
+    #[test]
+    fn up_and_down_move_the_cursor_and_clamp() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.design.as_ref().unwrap().cursor, 0);
+        for _ in 0..20 {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(app.design.as_ref().unwrap().cursor, 6);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.design.as_ref().unwrap().cursor, 5);
+    }
+
+    #[test]
+    fn right_expands_then_steps_into_a_composite_and_left_collapses_then_goes_up() {
+        let mut app = design_app();
+        open_me(&mut app);
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Down); // friends: [User!]!
+        }
+        assert_eq!(app.design_rows()[4].node.label, "friends: [User!]!");
+
+        press(&mut app, KeyCode::Right); // expand
+        assert_eq!(app.design_rows().len(), 13);
+        assert_eq!(app.design.as_ref().unwrap().cursor, 4);
+
+        press(&mut app, KeyCode::Right); // step into the first child
+        assert_eq!(app.design.as_ref().unwrap().cursor, 5);
+
+        press(&mut app, KeyCode::Left); // collapsed leaf: go to the parent
+        assert_eq!(app.design.as_ref().unwrap().cursor, 4);
+
+        press(&mut app, KeyCode::Left); // expanded: collapse
+        assert_eq!(app.design_rows().len(), 7);
+        assert_eq!(app.design.as_ref().unwrap().cursor, 4);
+    }
+
+    #[test]
+    fn right_does_nothing_on_leaves_and_recursive_nodes() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down); // id (leaf)
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.design_rows().len(), 7);
+        assert_eq!(app.design.as_ref().unwrap().cursor, 1);
+
+        // Expand friends, then move to its recursive `friends` child.
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Right);
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(app.design_rows()[8].node.label, "friends: [User!]!");
+        let before = app.design_rows().len();
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.design_rows().len(), before);
+    }
+
+    #[test]
+    fn left_on_the_collapsed_root_does_nothing() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Left); // collapse the root
+        assert_eq!(app.design_rows().len(), 1);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.design_rows().len(), 1);
+        assert!(app.design.is_some());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn esc_returns_to_the_results_and_keeps_the_search_text() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.design.is_none());
+        assert_eq!(app.query, "me");
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn q_is_a_letter_in_the_results_and_quits_in_design() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn preview_rows_show_the_highlighted_hit_with_its_root_expanded() {
+        let mut app = design_app();
+        type_text(&mut app, "me");
+        let preview = app.preview_rows();
+        assert_eq!(preview.len(), 7);
+        assert_eq!(preview[0].node.label, "me: User");
+        assert!(preview[0].expanded);
+        assert_eq!(app.current_description(), "The current user.");
+
+        type_text(&mut app, "zzz");
+        assert!(app.preview_rows().is_empty());
+        assert_eq!(app.current_description(), "");
+    }
+
+    #[test]
+    fn the_description_follows_the_cursor_in_design() {
+        let mut app = design_app();
+        open_me(&mut app);
+        assert_eq!(app.current_description(), "The current user.");
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down); // role: Role
+        }
+        assert_eq!(app.current_description(), "Access role.");
+    }
+
+    #[test]
+    fn help_lists_the_keys_of_the_current_mode() {
+        let mut app = design_app();
+        assert!(app
+            .help_keys()
+            .iter()
+            .any(|(keys, _)| keys.contains("Enter")));
+        assert!(!app.help_keys().iter().any(|(keys, _)| keys.contains('q')));
+        open_me(&mut app);
+        assert!(app.help_keys().iter().any(|(keys, _)| keys.contains("←")));
+        assert!(app.help_keys().iter().any(|(keys, _)| *keys == "q"));
+    }
+
+    #[test]
+    fn a_refresh_leaves_design_mode() {
+        let mut app = design_app();
+        open_me(&mut app);
+        let response: IntrospectionResponse = serde_json::from_str(DESIGN_FIXTURE).unwrap();
+        app.apply_refresh_ok(response.data.schema, 5_000);
+        assert!(app.design.is_none());
     }
 }
