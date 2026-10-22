@@ -116,9 +116,12 @@ pub fn store(path: &Path, entry: &CacheEntry) -> Result<(), CacheError> {
         fs::create_dir_all(parent).map_err(io_err)?;
     }
     let json = serde_json::to_string(entry)?;
-    let tmp = path.with_extension("json.tmp");
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     fs::write(&tmp, json).map_err(io_err)?;
-    fs::rename(&tmp, path).map_err(io_err)?;
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(io_err(e));
+    }
     Ok(())
 }
 
@@ -133,6 +136,17 @@ mod tests {
             fetched_at,
             response: fixture_response(),
         }
+    }
+
+    #[test]
+    fn store_leaves_no_temp_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        store(&dir.path().join("c.json"), &entry(1)).unwrap();
+        let names: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["c.json".to_string()]);
     }
 
     #[test]
