@@ -42,7 +42,7 @@ fragment TypeRef on __Type {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    #[error("request failed: {0}")]
+    #[error("request failed")]
     Http(#[from] reqwest::Error),
     #[error("server answered HTTP {status}: {body}")]
     Status { status: u16, body: String },
