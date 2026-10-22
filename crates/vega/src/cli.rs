@@ -3,11 +3,11 @@ use clap::Parser;
 /// Explore a GraphQL server's schema from the terminal.
 ///
 /// Without --search or --describe, opens the interactive browser.
-/// The API key is read from the GRAPHQL_KEY environment variable.
+/// The API key is read from the VEGA_GRAPHQL_KEY environment variable.
 #[derive(Debug, Parser)]
 #[command(name = "vega", version)]
 pub struct Cli {
-    /// GraphQL endpoint (overrides GRAPHQL_URI and config.toml)
+    /// GraphQL endpoint (overrides VEGA_GRAPHQL_URI and config.toml)
     #[arg(long)]
     pub uri: Option<String>,
 

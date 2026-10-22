@@ -17,7 +17,7 @@ fn env_var(name: &str) -> Option<String> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let env_uri = env_var("GRAPHQL_URI");
+    let env_uri = env_var("VEGA_GRAPHQL_URI");
     let has_endpoint = [cli.uri.as_deref(), env_uri.as_deref()]
         .into_iter()
         .flatten()
@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
     let settings = config::resolve_settings(
         cli.uri.clone(),
         env_uri,
-        env_var("GRAPHQL_KEY"),
+        env_var("VEGA_GRAPHQL_KEY"),
         file_config,
     )?;
 
