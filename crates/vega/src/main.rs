@@ -1,6 +1,7 @@
 mod cli;
 mod output;
 mod schema_source;
+mod tui;
 
 use anyhow::Context;
 use clap::Parser;
