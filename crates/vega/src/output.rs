@@ -53,16 +53,29 @@ mod tests {
         assert_eq!(hits_text(&[]), "");
     }
 
+    fn id_variable() -> vega_core::querygen::VariableDef {
+        use vega_core::schema::{TypeKind, TypeRef};
+        vega_core::querygen::VariableDef {
+            name: "id".into(),
+            ty: "ID!".into(),
+            required: true,
+            default: None,
+            path: Vec::new(),
+            type_ref: TypeRef {
+                kind: TypeKind::Scalar,
+                name: Some("ID".into()),
+                of_type: None,
+            },
+        }
+    }
+
     #[test]
     fn query_text_lists_the_variables_after_the_query() {
-        use vega_core::querygen::{GeneratedQuery, VariableDef};
+        use vega_core::querygen::GeneratedQuery;
         let query = GeneratedQuery {
             operation_name: "UserRead".into(),
             text: "query UserRead($id: ID!) {\n  userRead(id: $id) {\n    id\n  }\n}".into(),
-            variables: vec![VariableDef {
-                name: "id".into(),
-                ty: "ID!".into(),
-            }],
+            variables: vec![id_variable()],
         };
         assert_eq!(
             query_text(&query),

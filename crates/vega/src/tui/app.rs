@@ -1099,4 +1099,41 @@ mod tests {
         open_me(&mut app);
         assert!(app.help_keys().iter().any(|(keys, _)| *keys == "Space"));
     }
+
+    #[test]
+    fn space_toggles_optional_arguments_and_ignores_required_ones() {
+        let mut app = design_app();
+        type_text(&mut app, "search");
+        assert_eq!(app.hits[0].path, "Query.search");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down); // args group
+        press(&mut app, KeyCode::Right); // expand it
+        press(&mut app, KeyCode::Down); // term (required)
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!app.is_selected(&[Seg::Args, Seg::Arg("term".to_string())]));
+        press(&mut app, KeyCode::Down); // first (optional)
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.is_selected(&[Seg::Args, Seg::Arg("first".to_string())]));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!app.is_selected(&[Seg::Args, Seg::Arg("first".to_string())]));
+    }
+
+    #[test]
+    fn opted_in_arguments_appear_in_the_generated_query() {
+        let mut app = design_app();
+        type_text(&mut app, "users");
+        assert_eq!(app.hits[0].path, "Query.users");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // id
+        press(&mut app, KeyCode::Up); // args group
+        press(&mut app, KeyCode::Right); // expand it
+        press(&mut app, KeyCode::Down); // role
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(
+            query_text(&app),
+            "query Users($role: Role) {\n  users(role: $role) {\n    id\n  }\n}"
+        );
+    }
 }

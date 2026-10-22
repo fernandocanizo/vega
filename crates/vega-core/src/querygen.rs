@@ -1,12 +1,13 @@
 //! Turns a selection of leaf fields into GraphQL query text plus the variables the
-//! query needs. Only required arguments are emitted (as variables); everything is
+//! query needs. Required arguments are always emitted (as variables), optional ones only when
+//! opted in; everything is
 //! generated in schema order so the same selection always gives the same text.
 
 use std::collections::HashSet;
 
 use serde::Serialize;
 
-use crate::schema::{Field, FullType, InputValue, Root, Schema, TypeKind};
+use crate::schema::{Field, FullType, InputValue, Root, Schema, TypeKind, TypeRef};
 use crate::selection::{OperationRef, Path, Seg, Selection};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -14,6 +15,16 @@ pub struct VariableDef {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: String,
+    /// Non-null with no default: the server cannot do without a value.
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Where the argument sits in the tree; keys the value the user typed for it.
+    #[serde(skip)]
+    pub path: Path,
+    /// The argument's full type, for choosing an editor and validating values.
+    #[serde(skip)]
+    pub type_ref: TypeRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -48,8 +59,11 @@ fn is_composite(kind: TypeKind) -> bool {
     )
 }
 
-fn is_required(arg: &InputValue) -> bool {
-    arg.ty.kind == TypeKind::NonNull && arg.default_value.is_none()
+fn arg_path(field_path: &[Seg], name: &str) -> Path {
+    let mut path = field_path.to_vec();
+    path.push(Seg::Args);
+    path.push(Seg::Arg(name.to_string()));
+    path
 }
 
 struct Builder<'a> {
@@ -60,14 +74,23 @@ struct Builder<'a> {
 }
 
 impl Builder<'_> {
-    /// `name` or `name(arg: $arg, ...)`, registering a variable per required argument.
-    fn call(&mut self, field: &Field) -> String {
-        let args: Vec<String> = field
+    /// `name` or `name(arg: $arg, ...)`, registering a variable per included argument:
+    /// every required one, plus the optional ones the user opted into.
+    fn call(&mut self, field: &Field, field_path: &[Seg]) -> String {
+        let included: Vec<&InputValue> = field
             .args
             .iter()
-            .filter(|arg| is_required(arg))
+            .filter(|arg| {
+                arg.is_required()
+                    || self
+                        .selection
+                        .arg_included(&arg_path(field_path, &arg.name))
+            })
+            .collect();
+        let args: Vec<String> = included
+            .into_iter()
             .map(|arg| {
-                let variable = self.variable_for(&field.name, arg);
+                let variable = self.variable_for(&field.name, field_path, arg);
                 format!("{}: ${variable}", arg.name)
             })
             .collect();
@@ -79,7 +102,7 @@ impl Builder<'_> {
     }
 
     /// The argument's own name if free, else `<field><Arg>`, then `<name>2`, `<name>3`...
-    fn variable_for(&mut self, field_name: &str, arg: &InputValue) -> String {
+    fn variable_for(&mut self, field_name: &str, field_path: &[Seg], arg: &InputValue) -> String {
         let mut name = arg.name.clone();
         if self.used.contains(&name) {
             name = format!("{field_name}{}", capitalize(&arg.name));
@@ -94,6 +117,10 @@ impl Builder<'_> {
         self.variables.push(VariableDef {
             name: name.clone(),
             ty: arg.ty.render(),
+            required: arg.is_required(),
+            default: arg.default_value.clone(),
+            path: arg_path(field_path, &arg.name),
+            type_ref: arg.ty.clone(),
         });
         name
     }
@@ -108,7 +135,7 @@ impl Builder<'_> {
         for field in ty.fields.iter().flatten() {
             path.push(Seg::Field(field.name.clone()));
             if self.selection.has_under(&path[..]) {
-                let call = self.call(field);
+                let call = self.call(field, &path[..]);
                 let target = field.ty.named().and_then(|name| schema.type_by_name(name));
                 match target {
                     Some(inner) if is_composite(inner.kind) => {
@@ -158,7 +185,7 @@ pub fn generate(
         variables: Vec::new(),
         used: HashSet::new(),
     };
-    let call = builder.call(field);
+    let call = builder.call(field, &[]);
 
     let mut body = Vec::new();
     let target = field.ty.named().and_then(|name| schema.type_by_name(name));
@@ -187,7 +214,10 @@ pub fn generate(
         let defs: Vec<String> = builder
             .variables
             .iter()
-            .map(|v| format!("${}: {}", v.name, v.ty))
+            .map(|v| match &v.default {
+                Some(default) => format!("${}: {} = {default}", v.name, v.ty),
+                None => format!("${}: {}", v.name, v.ty),
+            })
             .collect();
         format!("{keyword} {name}({}) {{", defs.join(", "))
     };
@@ -216,11 +246,11 @@ mod tests {
         generate(&schema, &op, &selection).unwrap()
     }
 
-    fn var(name: &str, ty: &str) -> VariableDef {
-        VariableDef {
-            name: name.to_string(),
-            ty: ty.to_string(),
-        }
+    fn pairs(q: &GeneratedQuery) -> Vec<(&str, &str)> {
+        q.variables
+            .iter()
+            .map(|v| (v.name.as_str(), v.ty.as_str()))
+            .collect()
     }
 
     #[test]
@@ -250,7 +280,7 @@ mod tests {
             q.text,
             "query Me($first: Int!) {\n  me {\n    posts(first: $first) {\n      title\n    }\n  }\n}"
         );
-        assert_eq!(q.variables, [var("first", "Int!")]);
+        assert_eq!(pairs(&q), [("first", "Int!")]);
     }
 
     #[test]
@@ -260,7 +290,7 @@ mod tests {
             q.text,
             "query Search($term: String!) {\n  search(term: $term) {\n    __typename\n    ... on User {\n      name\n    }\n  }\n}"
         );
-        assert_eq!(q.variables, [var("term", "String!")]);
+        assert_eq!(pairs(&q), [("term", "String!")]);
     }
 
     #[test]
@@ -279,7 +309,7 @@ mod tests {
             q.text,
             "query Node($id: ID!, $postId: ID!) {\n  node(id: $id) {\n    __typename\n    ... on User {\n      post(id: $postId) {\n        title\n      }\n    }\n  }\n}"
         );
-        assert_eq!(q.variables, [var("id", "ID!"), var("postId", "ID!")]);
+        assert_eq!(pairs(&q), [("id", "ID!"), ("postId", "ID!")]);
     }
 
     #[test]
@@ -289,7 +319,7 @@ mod tests {
             q.text,
             "mutation PostCreate($input: PostInput!) {\n  postCreate(input: $input) {\n    id\n  }\n}"
         );
-        assert_eq!(q.variables, [var("input", "PostInput!")]);
+        assert_eq!(pairs(&q), [("input", "PostInput!")]);
     }
 
     #[test]
@@ -316,5 +346,64 @@ mod tests {
         assert!(json["query"].as_str().unwrap().starts_with("query Node("));
         assert_eq!(json["variables"][0]["name"], "id");
         assert_eq!(json["variables"][0]["type"], "ID!");
+        assert_eq!(json["variables"][0]["required"], true);
+        assert!(json["variables"][0].get("path").is_none());
+    }
+
+    #[test]
+    fn opted_in_optional_arguments_become_variables_in_schema_order() {
+        let q = gen("Query.search", "on:User.name,arg:first");
+        assert_eq!(
+            q.text,
+            "query Search($term: String!, $first: Int) {\n  search(term: $term, first: $first) {\n    __typename\n    ... on User {\n      name\n    }\n  }\n}"
+        );
+        assert_eq!(pairs(&q), [("term", "String!"), ("first", "Int")]);
+        assert!(q.variables[0].required);
+        assert!(!q.variables[1].required);
+    }
+
+    #[test]
+    fn an_optional_argument_alone_does_not_make_a_valid_selection() {
+        let schema = design_schema();
+        let op = OperationRef::parse(&schema, "Query.users").unwrap();
+        let selection = parse_select(&schema, &op, "arg:role").unwrap();
+        assert_eq!(
+            generate(&schema, &op, &selection),
+            Err(GenerateError::EmptySelection)
+        );
+    }
+
+    #[test]
+    fn defaulted_arguments_keep_their_default_in_the_definition() {
+        let q = gen("Query.users", "id,arg:limit");
+        assert_eq!(
+            q.text,
+            "query Users($limit: Int! = 10) {\n  users(limit: $limit) {\n    id\n  }\n}"
+        );
+        assert_eq!(q.variables[0].default.as_deref(), Some("10"));
+        assert!(!q.variables[0].required);
+    }
+
+    #[test]
+    fn scalar_operations_can_take_opted_in_arguments() {
+        let q = gen("Query.postCount", "arg:since");
+        assert_eq!(
+            q.text,
+            "query PostCount($since: String) {\n  postCount(since: $since)\n}"
+        );
+    }
+
+    #[test]
+    fn variables_remember_where_their_argument_sits() {
+        let q = gen("Query.me", "posts.title");
+        assert_eq!(
+            q.variables[0].path,
+            vec![
+                Seg::Field("posts".to_string()),
+                Seg::Args,
+                Seg::Arg("first".to_string())
+            ]
+        );
+        assert_eq!(q.variables[0].type_ref.render(), "Int!");
     }
 }
