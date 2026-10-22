@@ -7,6 +7,7 @@ pub mod config;
 pub mod describe;
 pub mod schema;
 pub mod search;
+pub mod selection;
 pub mod xdg;
 
 #[cfg(test)]

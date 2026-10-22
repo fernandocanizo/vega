@@ -9,3 +9,12 @@ pub fn fixture_response() -> IntrospectionResponse {
 pub fn fixture_schema() -> Schema {
     fixture_response().data.schema
 }
+
+pub const DESIGN_FIXTURE: &str = include_str!("../tests/fixtures/design.json");
+
+pub fn design_schema() -> Schema {
+    serde_json::from_str::<IntrospectionResponse>(DESIGN_FIXTURE)
+        .expect("design fixture parses")
+        .data
+        .schema
+}

@@ -1,0 +1,81 @@
+{
+  "data": {
+    "__schema": {
+      "queryType": { "name": "QueryType" },
+      "mutationType": { "name": "MutationType" },
+      "subscriptionType": null,
+      "types": [
+        {
+          "kind": "OBJECT", "name": "QueryType", "description": null,
+          "fields": [
+            { "name": "me", "description": "The current user.", "args": [], "type": { "kind": "OBJECT", "name": "User", "ofType": null }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "node", "description": "Fetch any node by id.", "args": [ { "name": "id", "description": null, "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } }, "defaultValue": null } ], "type": { "kind": "INTERFACE", "name": "Node", "ofType": null }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "search", "description": "Search users and posts.", "args": [ { "name": "term", "description": null, "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "String", "ofType": null } }, "defaultValue": null }, { "name": "first", "description": null, "type": { "kind": "SCALAR", "name": "Int", "ofType": null }, "defaultValue": null } ], "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "LIST", "name": null, "ofType": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "UNION", "name": "SearchResult", "ofType": null } } } }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "version", "description": "Server version.", "args": [], "type": { "kind": "SCALAR", "name": "String", "ofType": null }, "isDeprecated": false, "deprecationReason": null }
+          ],
+          "inputFields": null, "enumValues": null, "possibleTypes": null
+        },
+        {
+          "kind": "OBJECT", "name": "MutationType", "description": null,
+          "fields": [
+            { "name": "postCreate", "description": "Create a post.", "args": [ { "name": "input", "description": null, "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "INPUT_OBJECT", "name": "PostInput", "ofType": null } }, "defaultValue": null } ], "type": { "kind": "OBJECT", "name": "Post", "ofType": null }, "isDeprecated": false, "deprecationReason": null }
+          ],
+          "inputFields": null, "enumValues": null, "possibleTypes": null
+        },
+        {
+          "kind": "OBJECT", "name": "User", "description": "A person.",
+          "fields": [
+            { "name": "id", "description": null, "args": [], "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "name", "description": null, "args": [], "type": { "kind": "SCALAR", "name": "String", "ofType": null }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "role", "description": "Access role.", "args": [], "type": { "kind": "ENUM", "name": "Role", "ofType": null }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "friends", "description": null, "args": [], "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "LIST", "name": null, "ofType": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "OBJECT", "name": "User", "ofType": null } } } }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "posts", "description": null, "args": [ { "name": "first", "description": null, "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "Int", "ofType": null } }, "defaultValue": null } ], "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "LIST", "name": null, "ofType": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "OBJECT", "name": "Post", "ofType": null } } } }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "post", "description": null, "args": [ { "name": "id", "description": null, "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } }, "defaultValue": null } ], "type": { "kind": "OBJECT", "name": "Post", "ofType": null }, "isDeprecated": false, "deprecationReason": null }
+          ],
+          "inputFields": null, "enumValues": null, "possibleTypes": null
+        },
+        {
+          "kind": "OBJECT", "name": "Post", "description": "A written post.",
+          "fields": [
+            { "name": "id", "description": null, "args": [], "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "title", "description": null, "args": [], "type": { "kind": "SCALAR", "name": "String", "ofType": null }, "isDeprecated": false, "deprecationReason": null },
+            { "name": "author", "description": null, "args": [], "type": { "kind": "OBJECT", "name": "User", "ofType": null }, "isDeprecated": false, "deprecationReason": null }
+          ],
+          "inputFields": null, "enumValues": null, "possibleTypes": null
+        },
+        {
+          "kind": "INTERFACE", "name": "Node", "description": "Anything with an id.",
+          "fields": [
+            { "name": "id", "description": null, "args": [], "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } }, "isDeprecated": false, "deprecationReason": null }
+          ],
+          "inputFields": null, "enumValues": null,
+          "possibleTypes": [ { "kind": "OBJECT", "name": "User", "ofType": null }, { "kind": "OBJECT", "name": "Post", "ofType": null } ]
+        },
+        {
+          "kind": "UNION", "name": "SearchResult", "description": "A user or a post.",
+          "fields": null, "inputFields": null, "enumValues": null,
+          "possibleTypes": [ { "kind": "OBJECT", "name": "User", "ofType": null }, { "kind": "OBJECT", "name": "Post", "ofType": null } ]
+        },
+        {
+          "kind": "INPUT_OBJECT", "name": "PostInput", "description": "Fields for a new post.",
+          "fields": null,
+          "inputFields": [ { "name": "title", "description": null, "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "String", "ofType": null } }, "defaultValue": null } ],
+          "enumValues": null, "possibleTypes": null
+        },
+        {
+          "kind": "ENUM", "name": "Role", "description": "What a user may do.",
+          "fields": null, "inputFields": null,
+          "enumValues": [
+            { "name": "ADMIN", "description": "Full access.", "isDeprecated": false, "deprecationReason": null },
+            { "name": "VIEWER", "description": "Read-only.", "isDeprecated": false, "deprecationReason": null }
+          ],
+          "possibleTypes": null
+        },
+        { "kind": "SCALAR", "name": "ID", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null },
+        { "kind": "SCALAR", "name": "String", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null },
+        { "kind": "SCALAR", "name": "Int", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null },
+        { "kind": "SCALAR", "name": "Boolean", "description": null, "fields": null, "inputFields": null, "enumValues": null, "possibleTypes": null }
+      ]
+    }
+  }
+}
