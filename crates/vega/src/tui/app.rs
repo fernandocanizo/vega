@@ -8,7 +8,7 @@ use vega_core::querygen::{self, GenerateError, GeneratedQuery, VariableDef};
 use vega_core::schema::Schema;
 use vega_core::search::{self, Hit};
 use vega_core::selection::{self, Path, Row, Seg, Selection, TreeRoot};
-use vega_core::variables::{self, State, Values};
+use vega_core::variables::{self, Editor, State, Values};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -48,6 +48,7 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("←", "Collapse a node, or go to its parent"),
     ("Space", "Select or unselect a field"),
     ("Tab", "Move to the next pane"),
+    ("Enter", "Edit the highlighted variable (Variables pane)"),
     ("Esc", "Back to the results"),
     ("q / Ctrl-Q", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
@@ -63,7 +64,6 @@ pub enum Focus {
 }
 
 /// An edit in progress in the Variables pane.
-#[allow(dead_code)] // the variants are only rendered until editing exists
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
     /// Typing a value (numbers, IDs, strings, JSON).
@@ -140,6 +140,15 @@ fn host_of(uri: &str) -> String {
         .to_string()
 }
 
+/// Stores the text typed for a variable; empty text clears it.
+fn set_value(design: &mut DesignState, path: &Path, raw: &str) {
+    if raw.is_empty() {
+        design.values.remove(path);
+    } else {
+        design.values.insert(path.clone(), raw.to_string());
+    }
+}
+
 impl App {
     pub fn new(schema: Schema, uri: &str, fetched_at: u64) -> Self {
         let hits = search::search(&schema, "");
@@ -178,6 +187,10 @@ impl App {
             }
             return Action::None;
         }
+        if self.is_editing() {
+            self.handle_edit_key(key.code);
+            return Action::None;
+        }
         let opens_help = match key.code {
             KeyCode::F(1) | KeyCode::Char('?') => true,
             KeyCode::Char('h') => self.design.is_some(),
@@ -193,6 +206,93 @@ impl App {
             self.handle_search_key(key.code);
         }
         Action::None
+    }
+
+    pub fn is_editing(&self) -> bool {
+        self.design
+            .as_ref()
+            .is_some_and(|design| design.edit.is_some())
+    }
+
+    /// Enter on a variable: toggle a boolean, or open the editor its type needs.
+    fn start_edit(&mut self) {
+        let rows = self.variable_rows();
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
+        design.var_cursor = design.var_cursor.min(rows.len().saturating_sub(1));
+        let Some(row) = rows.get(design.var_cursor) else {
+            return;
+        };
+        match variables::editor_for(&self.schema, &row.def.type_ref) {
+            Editor::Toggle => {
+                let next = match row.raw.as_str() {
+                    "true" => "false",
+                    "false" if !row.def.required => "",
+                    _ => "true",
+                };
+                set_value(design, &row.def.path, next);
+            }
+            Editor::Choice(names) => {
+                let mut options = names;
+                if !row.def.required {
+                    options.insert(0, String::new());
+                }
+                let index = options
+                    .iter()
+                    .position(|option| *option == row.raw)
+                    .unwrap_or(0);
+                design.edit = Some(Edit::Choice { options, index });
+            }
+            Editor::Text | Editor::Json => design.edit = Some(Edit::Text(row.raw.clone())),
+        }
+    }
+
+    /// Keys while a variable is being edited: Enter commits, Esc cancels.
+    fn handle_edit_key(&mut self, code: KeyCode) {
+        let rows = self.variable_rows();
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
+        let Some(mut edit) = design.edit.take() else {
+            return;
+        };
+        let Some(row) = rows.get(design.var_cursor) else {
+            return;
+        };
+        let finished = match (&mut edit, code) {
+            (_, KeyCode::Esc) => true,
+            (Edit::Text(buffer), KeyCode::Char(c)) => {
+                buffer.push(c);
+                false
+            }
+            (Edit::Text(buffer), KeyCode::Backspace) => {
+                buffer.pop();
+                false
+            }
+            (Edit::Text(buffer), KeyCode::Enter) => {
+                set_value(design, &row.def.path, buffer);
+                true
+            }
+            (Edit::Choice { options, index }, KeyCode::Down) => {
+                *index = (*index + 1).min(options.len().saturating_sub(1));
+                false
+            }
+            (Edit::Choice { index, .. }, KeyCode::Up) => {
+                *index = index.saturating_sub(1);
+                false
+            }
+            (Edit::Choice { options, index }, KeyCode::Enter) => {
+                if let Some(option) = options.get(*index) {
+                    set_value(design, &row.def.path, option);
+                }
+                true
+            }
+            _ => false,
+        };
+        if !finished {
+            design.edit = Some(edit);
+        }
     }
 
     fn request_refresh(&mut self) -> Action {
@@ -229,6 +329,7 @@ impl App {
             KeyCode::Tab => self.next_focus(),
             KeyCode::Up if self.focused(Focus::Variables) => self.move_var_cursor(-1),
             KeyCode::Down if self.focused(Focus::Variables) => self.move_var_cursor(1),
+            KeyCode::Enter if self.focused(Focus::Variables) => self.start_edit(),
             _ if self
                 .design
                 .as_ref()
@@ -1259,5 +1360,169 @@ mod tests {
         press(&mut app, KeyCode::Up);
         assert_eq!(app.design.as_ref().unwrap().var_cursor, 0);
         assert_eq!(app.design.as_ref().unwrap().cursor, tree_cursor);
+    }
+
+    /// Opens Query.users, selects `id` and the optional arguments `role`, `active` and
+    /// `floor`, and focuses the Variables pane (variables: role, active, floor).
+    fn users_variables(app: &mut App) {
+        type_text(app, "users");
+        assert_eq!(app.hits[0].path, "Query.users");
+        press(app, KeyCode::Enter);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Char(' ')); // id
+        press(app, KeyCode::Up);
+        press(app, KeyCode::Right); // expand args
+        for _ in 0..3 {
+            press(app, KeyCode::Down);
+            press(app, KeyCode::Char(' ')); // role, active, floor
+        }
+        press(app, KeyCode::Tab);
+        press(app, KeyCode::Tab);
+    }
+
+    fn raw_values(app: &App) -> Vec<String> {
+        app.variable_rows().into_iter().map(|row| row.raw).collect()
+    }
+
+    #[test]
+    fn typing_a_value_and_pressing_enter_stores_it() {
+        use vega_core::variables::State;
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.is_editing());
+        type_text(&mut app, "42");
+        press(&mut app, KeyCode::Backspace);
+        type_text(&mut app, "3");
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.is_editing());
+        let rows = app.variable_rows();
+        assert_eq!(rows[0].raw, "43");
+        assert_eq!(rows[0].state, State::Value(serde_json::json!("43")));
+    }
+
+    #[test]
+    fn esc_cancels_an_edit_and_keeps_the_old_value() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "42");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "99");
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.is_editing());
+        assert!(app.design.is_some(), "Esc only cancels the edit");
+        assert_eq!(raw_values(&app), ["42"]);
+    }
+
+    #[test]
+    fn committing_empty_text_removes_the_value() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "7");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(raw_values(&app), [""]);
+    }
+
+    #[test]
+    fn every_key_is_text_while_editing_but_ctrl_q_still_quits() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "qh?");
+        assert!(!app.should_quit);
+        assert!(!app.help_open);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(raw_values(&app), ["qh?"]);
+
+        press(&mut app, KeyCode::Enter);
+        ctrl(&mut app, 'q');
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn booleans_cycle_with_enter_and_optional_ones_return_to_empty() {
+        let mut app = design_app();
+        users_variables(&mut app);
+        press(&mut app, KeyCode::Down); // active
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Enter);
+            assert!(!app.is_editing());
+            seen.push(raw_values(&app)[1].clone());
+        }
+        assert_eq!(seen, ["true", "false", "", "true"]);
+    }
+
+    #[test]
+    fn enums_are_picked_from_a_list_with_an_unset_option() {
+        let mut app = design_app();
+        users_variables(&mut app); // cursor on role
+        press(&mut app, KeyCode::Enter);
+        assert!(app.is_editing());
+        press(&mut app, KeyCode::Down); // ADMIN
+        press(&mut app, KeyCode::Down); // VIEWER
+        press(&mut app, KeyCode::Down); // clamped
+        press(&mut app, KeyCode::Up); // ADMIN
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(raw_values(&app)[0], "ADMIN");
+
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Up); // (unset)
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(raw_values(&app)[0], "");
+
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(raw_values(&app)[0], "");
+    }
+
+    #[test]
+    fn invalid_values_are_reported_per_variable() {
+        use vega_core::variables::State;
+        let mut app = design_app();
+        users_variables(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down); // floor
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.variable_rows()[2].state,
+            State::Invalid("expected a number".to_string())
+        );
+    }
+
+    #[test]
+    fn values_survive_leaving_and_reentering_and_a_refresh_clears_them() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "42");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.design.is_none());
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(raw_values(&app), ["42"]);
+
+        press(&mut app, KeyCode::Esc);
+        let response: IntrospectionResponse = serde_json::from_str(DESIGN_FIXTURE).unwrap();
+        app.apply_refresh_ok(response.data.schema, 5_000);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.variable_rows().is_empty());
+    }
+
+    #[test]
+    fn help_in_design_mentions_editing() {
+        let mut app = design_app();
+        open_me(&mut app);
+        assert!(app.help_keys().iter().any(|(keys, _)| *keys == "Enter"));
     }
 }

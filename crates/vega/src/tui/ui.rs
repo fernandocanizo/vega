@@ -556,4 +556,46 @@ mod tests {
             terminal.draw(|frame| draw(frame, &app, 1_000)).unwrap();
         }
     }
+
+    #[test]
+    fn an_edited_value_shows_next_to_its_variable_and_the_editor_shows_a_cursor() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = design_app_on("node");
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Char(' ')); // id
+        press_key(&mut app, KeyCode::Tab);
+        press_key(&mut app, KeyCode::Tab);
+        press_key(&mut app, KeyCode::Enter);
+        press_key(&mut app, KeyCode::Char('4'));
+        press_key(&mut app, KeyCode::Char('2'));
+        assert!(screen(&render(&app, 1_000)).contains("$id: ID! = 42▏"));
+        press_key(&mut app, KeyCode::Enter);
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("$id: ID! = 42"));
+        assert!(!text.contains("required"));
+    }
+
+    #[test]
+    fn an_invalid_value_shows_its_reason() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = design_app_on("users");
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Char(' ')); // id
+        press_key(&mut app, KeyCode::Up);
+        press_key(&mut app, KeyCode::Right);
+        for _ in 0..3 {
+            press_key(&mut app, KeyCode::Down);
+        }
+        press_key(&mut app, KeyCode::Char(' ')); // floor
+        press_key(&mut app, KeyCode::Tab);
+        press_key(&mut app, KeyCode::Tab);
+        press_key(&mut app, KeyCode::Enter);
+        for c in "abc".chars() {
+            press_key(&mut app, KeyCode::Char(c));
+        }
+        press_key(&mut app, KeyCode::Enter);
+        assert!(screen(&render(&app, 1_000)).contains("= abc  ← expected a number"));
+    }
 }
