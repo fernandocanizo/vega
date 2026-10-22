@@ -6,8 +6,8 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 
 ## Scope
 
-- Phase 1 (current): search and navigate, read-only.
-- Phase 2 (not started): composer, variables, running queries.
+- Phase 1 (done): search and navigate, read-only.
+- Phase 2 (in progress): build queries by selecting fields. Step 1 (tree, selection, generated query, --query) is done; variables and running queries are next.
 - Do not add features outside the current phase.
 
 ## Commands
@@ -19,7 +19,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 
 ## Layout
 
-- `crates/vega-core`: library. Schema model, search, detail rendering, cache, config, HTTP client. No UI code.
+- `crates/vega-core`: library. Schema model, search, detail rendering, tree and selection model, query generation, cache, config, HTTP client. No UI code.
 - `crates/vega`: binary. clap CLI and ratatui TUI, thin layers over `vega-core`.
 - `crates/vega-core/tests/fixtures/introspection.json`: shared schema fixture.
 
