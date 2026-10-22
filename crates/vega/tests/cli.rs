@@ -166,3 +166,78 @@ fn broken_config_file_is_ignored_when_an_endpoint_is_given() {
     let out = vega(&cache, &["--search", "user"]);
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+#[test]
+fn query_prints_the_generated_query_and_its_variables() {
+    let cache = seeded_cache(60);
+    let out = vega(
+        &cache,
+        &["--query", "Query.userRead", "--select", "id,name"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "query UserRead($id: ID!) {\n  userRead(id: $id) {\n    id\n    name\n  }\n}\n\nVariables:\n  $id: ID!\n"
+    );
+    assert_eq!(stderr(&out), "");
+}
+
+#[test]
+fn query_json_has_the_operation_name_query_and_variables() {
+    let cache = seeded_cache(60);
+    let out = vega(
+        &cache,
+        &["--query", "Query.userRead", "--select", "role", "--json"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["operationName"], "UserRead");
+    assert!(json["query"].as_str().unwrap().contains("role"));
+    assert_eq!(json["variables"][0]["name"], "id");
+    assert_eq!(json["variables"][0]["type"], "ID!");
+}
+
+#[test]
+fn query_without_select_on_an_object_asks_for_a_selection() {
+    let cache = seeded_cache(60);
+    let out = vega(&cache, &["--query", "Query.userRead"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("nothing selected"));
+    assert_eq!(stdout(&out), "");
+}
+
+#[test]
+fn query_with_an_unknown_operation_or_field_fails_with_a_message() {
+    let cache = seeded_cache(60);
+    let out = vega(&cache, &["--query", "Query.nope", "--select", "id"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("not found"));
+
+    let out = vega(&cache, &["--query", "Query.userRead", "--select", "nope"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("no such field"));
+
+    let out = vega(&cache, &["--query", "Query.userRead", "--select", "id.x"]);
+    assert!(!out.status.success());
+}
+
+#[test]
+fn select_requires_query_and_query_conflicts_with_search() {
+    let cache = seeded_cache(60);
+    let out = vega(&cache, &["--select", "id"]);
+    assert!(!out.status.success());
+    let out = vega(&cache, &["--query", "Query.userRead", "--search", "user"]);
+    assert!(!out.status.success());
+}
+
+#[test]
+fn query_warns_about_a_stale_cache_on_stderr_only() {
+    let cache = seeded_cache(25 * 3600);
+    let out = vega(
+        &cache,
+        &["--query", "Query.userRead", "--select", "id", "--json"],
+    );
+    assert!(out.status.success());
+    assert!(stderr(&out).contains("warning"));
+    assert!(serde_json::from_str::<serde_json::Value>(&stdout(&out)).is_ok());
+}
