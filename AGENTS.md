@@ -6,7 +6,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 
 ## Scope
 
-- Read-only exploration of the schema, plus building a query from selected fields. Sending queries to the server is not implemented yet.
+- Explore the schema, build a query from selected fields, edit its variables and run it against the server. Subscriptions can be built but not run.
 - Do not add features beyond what the task asks.
 
 ## Commands
@@ -47,7 +47,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 
 ## Rules that must not be broken
 
-- The API key comes only from the `VEGA_GRAPHQL_KEY` environment variable. Never write it to disk, the cache, logs or error messages, and never add a CLI flag for it.
+- The API key comes only from the `VEGA_GRAPHQL_KEY` environment variable. Never write it to disk, the cache, logs or error messages, and never add a CLI flag for it. The key never appears in the Response pane or in `--run` output (the client masks it).
 - Variable values live only in memory for the session: never write them to disk, the cache or logs.
 - Config and cache paths follow XDG (`$XDG_CONFIG_HOME/vega`, `$XDG_CACHE_HOME/vega`, `$XDG_DATA_HOME/vega`). Precedence: CLI flag, then environment, then `config.toml`.
 - CLI commands print warnings to stderr only. Stdout (including `--json`) must stay machine-readable.

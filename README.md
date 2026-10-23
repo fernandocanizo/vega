@@ -10,9 +10,9 @@ It is a general GraphQL tool: it works with any server that allows introspection
 - Open any result to read its documentation, arguments and return type, and follow a field to its type to keep exploring.
 - Interactive TUI, plus command line flags (`--search`, `--describe`, `--json`) so scripts and coding agents can use the same features.
 - Caches the schema per server, shows how old the cache is, and refreshes it on demand.
-- Build a query by picking fields from a tree: expand with →, select with Space (optional arguments too), edit the typed variables with Tab and Enter, and watch the generated query update.
+- Build a query by picking fields from a tree: expand with →, select with Space (optional arguments too), edit the typed variables with Tab and Enter, and watch the generated query update, press r to run it and read the response (mutations ask first).
 
-Building the query and editing its variables works; running queries against the server is planned.
+Building, editing and running queries works; subscriptions can be built but not run.
 
 ## Requirements
 
@@ -81,6 +81,7 @@ vega --describe Query.userRead    # definition, docs, arguments and return type
 vega --search user --json         # machine readable output
 vega --query Query.userRead --select id,name   # print the generated query and its variables
 vega --query Query.users --select id,arg:role --var role=ADMIN   # opt in an optional argument and set a variable
+vega --query Query.userRead --select id,name --var id=42 --run   # run it and print the response
 vega --refresh                    # refetch the schema instead of using the cache
 ```
 

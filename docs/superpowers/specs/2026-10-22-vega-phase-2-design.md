@@ -1,7 +1,7 @@
 # Vega phase 2 design: build and run queries
 
 Date: 2026-10-22
-Status: approved design, pending implementation plan
+Status: implemented
 Builds on: `2026-10-21-vega-design.md` (phase 1). This document replaces that spec's phase 2 sketch and its TUI navigation rules (Backspace history, following a field to its type) for the interactive browser.
 
 ## Purpose
@@ -38,9 +38,9 @@ Run      Query                 | Response
 ## Keys
 
 - Browse: Up/Down move through Results; typing filters; Enter or Right starts designing the highlighted operation; Esc does nothing (quit with Ctrl-Q).
-- Design (tree focus): Up/Down move; Right expands a node; Left collapses it, or jumps to its parent when already collapsed; SPACE toggles a leaf (does nothing on an object); Tab cycles focus through Details, Query and Variables (the tree keys act only on Details); `r` runs; Esc returns to Browse, keeping the search text.
+- Design (tree focus): Up/Down move; Right expands a node; Left collapses it, or jumps to its parent when already collapsed; SPACE toggles a leaf (does nothing on an object); Tab cycles focus through Details, Query and Variables (the tree keys act only on Details); `r` runs the query from any pane; Esc returns to Browse, keeping the search text.
 - Variables focus: Up/Down pick a variable; Enter edits it; Esc cancels an edit; Tab returns to the tree. While a variable is being edited every key is text except Ctrl-Q and Ctrl-R; Boolean toggles empty, true, false with Enter.
-- Run: Up/Down and PgUp/PgDn scroll the response; `r` runs again; Tab focuses Variables; Esc returns to Design with the selection intact.
+- Run: Up/Down scroll the response a line and PgUp/PgDn ten lines; `r` runs again; Tab switches between Response and Variables; Esc returns to Design with the selection intact.
 - Anywhere: `?` or F1 opens help (listing the keys of the current mode), Ctrl-R refreshes the schema, Ctrl-Q quits (`q` also quits outside text entry).
 - Backspace and the type-following history are removed from the interactive browser.
 
@@ -74,14 +74,15 @@ Run      Query                 | Response
 - The request is a `POST` with `query`, `variables` and `operationName`, plus the `X-API-Key` header, sent from a background thread (one request in flight at a time).
 - The Response pane shows the pretty-printed JSON, the HTTP status, the elapsed time, and highlights GraphQL `errors`. A response with both `data` and `errors` shows both. Network failures, non-2xx statuses and invalid JSON are shown as errors in the same pane.
 - Variable values are never written to the cache or any log, and the API key never appears in the Response pane or any message.
+- The Response pane shows at most 10,000 lines of the pretty-printed response and a note with the real line count when it is capped; lines are not wrapped. `--run` prints everything.
+- Leaving Run mode while a request is running discards its result; only one request runs at a time.
 
 ## CLI parity
 
 - `vega --query <Type.field> --select <paths> --var name=value ...` prints the generated query and the variables and sends nothing. `--select` takes comma-separated paths relative to the operation (`id,role,friends.name`; union branches as `on:Type`, for example `search.on:User.name`).
 - `--select` paths may go through recursive types to any depth, even though the interactive tree stops expanding a type that already appears twice on the path.
 - Optional arguments are opted in with the path segment `arg:<name>` in `--select` (`--select id,arg:role`, or `friends.arg:first` for a nested field); naming a required argument is an error. `--var name=value` (repeatable, by variable name) sets a value; an invalid value is an error, a missing required one is only listed.
-- Adding `--run` sends the request and prints the response. `--json` gives machine-readable output on stdout.
-- A mutation run without a terminal requires `--yes`.
+- `--run` sends the request and prints the response body, pretty-printed, on stdout; `--json` prints an envelope `{operationName, status, elapsedMs, response}` instead. The exit status is non-zero when the request fails, the HTTP status is not 2xx, the body is not JSON, or the response has GraphQL errors (the body is still printed; the reason goes to stderr). A mutation asks "Run mutation <Name>? y/N" on the terminal; without a terminal it requires `--yes`. `--yes` requires `--run`. Subscriptions cannot be run.
 - Warnings and errors go to stderr only; stdout stays machine-readable.
 
 ## Architecture
@@ -102,11 +103,10 @@ Run      Query                 | Response
 
 1. Design mode: the tree, SPACE selection, the live Query pane, `--query` printing (variables listed but not yet editable). (done)
 2. Variables: the typed rows, validation, the optional-arguments nodes. (done)
-3. Run: the Response pane, mutation confirmation, `--run` and `--yes`.
+3. Run: the Response pane, mutation confirmation, `--run` and `--yes`. (done)
 
 Each step ends in a usable state and gets its own implementation plan.
 
 ## Open items for the plans
 
 - Exact `--select` syntax for union branches.
-- Whether very large responses need a display cap (decide when step 3 is planned).
