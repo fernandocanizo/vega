@@ -46,7 +46,8 @@ fn event_loop(
         // Short poll so the status bar age keeps ticking and refresh results show up.
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press && app.handle_key(key) == Action::Refresh {
+                if key.kind == KeyEventKind::Press && matches!(app.handle_key(key), Action::Refresh)
+                {
                     let settings = settings.clone();
                     let tx = tx.clone();
                     thread::spawn(move || {
