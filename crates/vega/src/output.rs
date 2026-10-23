@@ -1,6 +1,8 @@
 //! Plain-text rendering for CLI output.
 
+use vega_core::client::Response;
 use vega_core::querygen::GeneratedQuery;
+use vega_core::response::ResponseView;
 use vega_core::search::Hit;
 use vega_core::variables::{self, State};
 
@@ -40,6 +42,29 @@ pub fn query_json(query: &GeneratedQuery, states: &[State]) -> anyhow::Result<se
         }
     }
     Ok(json)
+}
+
+/// What `--run --json` prints: the response parsed when it is JSON, a string otherwise.
+pub fn run_json(query: &GeneratedQuery, response: &Response) -> serde_json::Value {
+    let body = serde_json::from_str::<serde_json::Value>(&response.body)
+        .unwrap_or_else(|_| serde_json::Value::String(response.body.clone()));
+    serde_json::json!({
+        "operationName": query.operation_name,
+        "status": response.status,
+        "elapsedMs": u64::try_from(response.elapsed.as_millis()).unwrap_or(u64::MAX),
+        "response": body,
+    })
+}
+
+/// One line saying why a run did not succeed.
+pub fn run_failure(view: &ResponseView) -> String {
+    if !(200..300).contains(&view.status) {
+        format!("server answered HTTP {}", view.status)
+    } else if view.not_json {
+        "the response is not valid JSON".to_string()
+    } else {
+        format!("GraphQL errors: {}", view.errors.join("; "))
+    }
 }
 
 #[cfg(test)]
@@ -133,5 +158,57 @@ mod tests {
         assert_eq!(json["variables"][0]["value"], "42");
         let json = query_json(&query, &[State::Unset]).unwrap();
         assert!(json["variables"][0].get("value").is_none());
+    }
+
+    #[test]
+    fn run_json_wraps_the_parsed_body_in_an_envelope() {
+        use std::time::Duration;
+        use vega_core::client::Response;
+        let query = GeneratedQuery {
+            operation_name: "Me".into(),
+            text: "query Me { me { id } }".into(),
+            variables: Vec::new(),
+        };
+        let response = Response {
+            status: 200,
+            elapsed: Duration::from_millis(7),
+            body: r#"{"data":{"me":null}}"#.into(),
+        };
+        let json = run_json(&query, &response);
+        assert_eq!(json["operationName"], "Me");
+        assert_eq!(json["status"], 200);
+        assert_eq!(json["elapsedMs"], 7);
+        assert_eq!(json["response"]["data"]["me"], serde_json::Value::Null);
+
+        let raw = Response {
+            body: "<html>".into(),
+            ..response
+        };
+        assert_eq!(run_json(&query, &raw)["response"], "<html>");
+    }
+
+    #[test]
+    fn run_failure_names_the_reason() {
+        use vega_core::response::ResponseView;
+        let view = |status, not_json, errors: Vec<&str>| ResponseView {
+            status,
+            elapsed_ms: 1,
+            errors: errors.into_iter().map(str::to_string).collect(),
+            not_json,
+            lines: Vec::new(),
+            total_lines: 0,
+        };
+        assert_eq!(
+            run_failure(&view(500, false, vec![])),
+            "server answered HTTP 500"
+        );
+        assert_eq!(
+            run_failure(&view(200, true, vec![])),
+            "the response is not valid JSON"
+        );
+        assert_eq!(
+            run_failure(&view(200, false, vec!["a", "b"])),
+            "GraphQL errors: a; b"
+        );
     }
 }

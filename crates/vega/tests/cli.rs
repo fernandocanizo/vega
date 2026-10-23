@@ -1,4 +1,8 @@
-use std::process::{Command, Output};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::thread;
 
 use tempfile::TempDir;
 use vega_core::cache::{cache_path, now_secs, store, CacheEntry};
@@ -10,26 +14,77 @@ const URI: &str = "http://127.0.0.1:9/graphql";
 
 /// A temp XDG cache dir holding a schema fetched `age_secs` ago.
 fn seeded_cache(age_secs: u64) -> TempDir {
+    seeded_cache_for(URI, age_secs)
+}
+
+fn seeded_cache_for(uri: &str, age_secs: u64) -> TempDir {
     let dir = tempfile::tempdir().unwrap();
     let response: IntrospectionResponse = serde_json::from_str(FIXTURE).unwrap();
     let entry = CacheEntry {
-        endpoint: URI.to_string(),
+        endpoint: uri.to_string(),
         fetched_at: now_secs() - age_secs,
         response,
     };
-    store(&cache_path(&dir.path().join("vega"), URI), &entry).unwrap();
+    store(&cache_path(&dir.path().join("vega"), uri), &entry).unwrap();
     dir
 }
 
 fn vega(cache: &TempDir, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_vega"))
+    vega_with(cache, URI, None, args)
+}
+
+fn vega_with(cache: &TempDir, uri: &str, key: Option<&str>, args: &[&str]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_vega"));
+    command
         .args(args)
         .env("XDG_CACHE_HOME", cache.path())
         .env("XDG_CONFIG_HOME", cache.path().join("config"))
-        .env("VEGA_GRAPHQL_URI", URI)
-        .env_remove("VEGA_GRAPHQL_KEY")
-        .output()
-        .unwrap()
+        .env("VEGA_GRAPHQL_URI", uri)
+        .stdin(Stdio::null());
+    match key {
+        Some(key) => command.env("VEGA_GRAPHQL_KEY", key),
+        None => command.env_remove("VEGA_GRAPHQL_KEY"),
+    };
+    command.output().unwrap()
+}
+
+/// Serves exactly one request on a random local port; returns the endpoint URL and a
+/// channel that yields the raw request text.
+fn serve_once(status_line: &'static str, body: &str) -> (String, mpsc::Receiver<String>) {
+    let body = body.to_string();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let uri = format!("http://{}/graphql", listener.local_addr().unwrap());
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut chunk).unwrap();
+            buf.extend_from_slice(&chunk[..n]);
+            let text = String::from_utf8_lossy(&buf).to_lowercase();
+            if let Some(pos) = text.find("\r\n\r\n") {
+                let length = text[..pos]
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .map(|v| v.trim().parse::<usize>().unwrap())
+                    .unwrap_or(0);
+                if buf.len() >= pos + 4 + length {
+                    break;
+                }
+            }
+            if n == 0 {
+                break;
+            }
+        }
+        tx.send(String::from_utf8_lossy(&buf).into_owned()).unwrap();
+        let response = format!(
+            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+    (uri, rx)
 }
 
 fn stdout(o: &Output) -> String {
@@ -349,4 +404,278 @@ fn var_requires_query() {
     let cache = seeded_cache(60);
     let out = vega(&cache, &["--var", "id=1"]);
     assert!(!out.status.success());
+}
+
+#[test]
+fn run_prints_the_response_body_and_sends_the_operation() {
+    let (uri, rx) = serve_once(
+        "200 OK",
+        r#"{"data":{"userRead":{"id":"42","name":"Ann"}}}"#,
+    );
+    let cache = seeded_cache_for(&uri, 60);
+    let out = vega_with(
+        &cache,
+        &uri,
+        None,
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id,name",
+            "--var",
+            "id=42",
+            "--run",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("\"name\": \"Ann\""),
+        "{}",
+        stdout(&out)
+    );
+    assert!(serde_json::from_str::<serde_json::Value>(&stdout(&out)).is_ok());
+    assert_eq!(stderr(&out), "");
+
+    let request = rx.recv().unwrap();
+    assert!(request.contains(r#""operationName":"UserRead""#));
+    assert!(request.contains(r#""variables":{"id":"42"}"#));
+}
+
+#[test]
+fn run_json_wraps_the_response_in_an_envelope() {
+    let (uri, _rx) = serve_once("200 OK", r#"{"data":{"userRead":{"id":"42"}}}"#);
+    let cache = seeded_cache_for(&uri, 60);
+    let out = vega_with(
+        &cache,
+        &uri,
+        None,
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id",
+            "--var",
+            "id=42",
+            "--run",
+            "--json",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(json["operationName"], "UserRead");
+    assert_eq!(json["status"], 200);
+    assert_eq!(json["response"]["data"]["userRead"]["id"], "42");
+    assert!(json["elapsedMs"].is_u64());
+}
+
+#[test]
+fn run_sends_the_api_key_and_never_prints_it() {
+    let body = r#"{"data":null,"errors":[{"message":"bad secret-key"}]}"#;
+    let (uri, rx) = serve_once("200 OK", body);
+    let cache = seeded_cache_for(&uri, 60);
+    let out = vega_with(
+        &cache,
+        &uri,
+        Some("secret-key"),
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id",
+            "--var",
+            "id=1",
+            "--run",
+        ],
+    );
+    assert!(rx
+        .recv()
+        .unwrap()
+        .to_lowercase()
+        .contains("x-api-key: secret-key"));
+    assert!(!stdout(&out).contains("secret-key"), "{}", stdout(&out));
+    assert!(!stderr(&out).contains("secret-key"), "{}", stderr(&out));
+}
+
+#[test]
+fn run_never_prints_the_api_key_when_the_connection_fails() {
+    let cache = seeded_cache(60); // the endpoint refuses connections
+    let out = vega_with(
+        &cache,
+        URI,
+        Some("secret-key"),
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id",
+            "--var",
+            "id=1",
+            "--run",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(!stdout(&out).contains("secret-key"), "{}", stdout(&out));
+    assert!(!stderr(&out).contains("secret-key"), "{}", stderr(&out));
+}
+
+#[test]
+fn run_exits_non_zero_on_graphql_errors_but_still_prints_the_body() {
+    let (uri, _rx) = serve_once(
+        "200 OK",
+        r#"{"data":{"userRead":null},"errors":[{"message":"nope"}]}"#,
+    );
+    let cache = seeded_cache_for(&uri, 60);
+    let out = vega_with(
+        &cache,
+        &uri,
+        None,
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id",
+            "--var",
+            "id=1",
+            "--run",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(stdout(&out).contains("nope"));
+    assert!(
+        stderr(&out).contains("GraphQL errors: nope"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn run_reports_http_errors() {
+    let (uri, _rx) = serve_once("500 Internal Server Error", "boom");
+    let cache = seeded_cache_for(&uri, 60);
+    let out = vega_with(
+        &cache,
+        &uri,
+        None,
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id",
+            "--var",
+            "id=1",
+            "--run",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("HTTP 500"), "{}", stderr(&out));
+}
+
+#[test]
+fn run_refuses_a_missing_required_variable_without_sending() {
+    let cache = seeded_cache(60); // the endpoint refuses connections
+    let out = vega(
+        &cache,
+        &["--query", "Query.userRead", "--select", "id", "--run"],
+    );
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("required"), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+}
+
+#[test]
+fn a_mutation_needs_yes_without_a_terminal() {
+    let input = r#"input={"name":"Ann"}"#;
+    let cache = seeded_cache(60);
+    let out = vega(
+        &cache,
+        &[
+            "--query",
+            "Mutation.userCreate",
+            "--select",
+            "id",
+            "--var",
+            input,
+            "--run",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("without a terminal"),
+        "{}",
+        stderr(&out)
+    );
+
+    let (uri, rx) = serve_once("200 OK", r#"{"data":{"userCreate":{"id":"1"}}}"#);
+    let cache = seeded_cache_for(&uri, 60);
+    let out = vega_with(
+        &cache,
+        &uri,
+        None,
+        &[
+            "--query",
+            "Mutation.userCreate",
+            "--select",
+            "id",
+            "--var",
+            input,
+            "--run",
+            "--yes",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(rx
+        .recv()
+        .unwrap()
+        .contains(r#""operationName":"UserCreate""#));
+}
+
+#[test]
+fn run_warns_about_a_stale_cache_on_stderr_only() {
+    let (uri, _rx) = serve_once("200 OK", r#"{"data":{"userRead":{"id":"1"}}}"#);
+    let cache = seeded_cache_for(&uri, 25 * 3600);
+    let out = vega_with(
+        &cache,
+        &uri,
+        None,
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id",
+            "--var",
+            "id=1",
+            "--run",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("warning"));
+    assert!(serde_json::from_str::<serde_json::Value>(&stdout(&out)).is_ok());
+}
+
+#[test]
+fn run_requires_query_and_yes_requires_run() {
+    let cache = seeded_cache(60);
+    assert!(!vega(&cache, &["--run"]).status.success());
+    let out = vega(
+        &cache,
+        &["--query", "Query.userRead", "--select", "id", "--yes"],
+    );
+    assert!(!out.status.success());
+}
+
+#[test]
+fn query_without_run_still_sends_nothing() {
+    let cache = seeded_cache(60); // the endpoint refuses connections
+    let out = vega(
+        &cache,
+        &[
+            "--query",
+            "Query.userRead",
+            "--select",
+            "id",
+            "--var",
+            "id=1",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
 }
