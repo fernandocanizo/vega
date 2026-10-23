@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Number, Value};
+use serde_json::{Map, Number, Value};
 
 use crate::querygen::VariableDef;
 use crate::schema::{Schema, TypeKind, TypeRef};
@@ -83,6 +83,26 @@ pub fn display(value: &Value) -> String {
         Value::String(text) => text.clone(),
         other => other.to_string(),
     }
+}
+
+/// The `variables` object of a request: every valid value, unset ones left out. The error
+/// names the first variable that is invalid or missing (`$id: required`).
+pub fn to_json(
+    schema: &Schema,
+    defs: &[VariableDef],
+    values: &Values,
+) -> Result<Map<String, Value>, String> {
+    let mut map = Map::new();
+    for def in defs {
+        match state(schema, def, values.get(&def.path).map(String::as_str)) {
+            State::Value(value) => {
+                map.insert(def.name.clone(), value);
+            }
+            State::Unset => {}
+            State::Invalid(reason) => return Err(format!("${}: {reason}", def.name)),
+        }
+    }
+    Ok(map)
 }
 
 fn parse(schema: &Schema, original: &TypeRef, text: &str) -> Result<Value, String> {
@@ -397,5 +417,35 @@ mod tests {
         assert_eq!(display(&json!("42")), "42");
         assert_eq!(display(&json!(7)), "7");
         assert_eq!(display(&json!({"a": 1})), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn to_json_keeps_valid_values_and_omits_unset_ones() {
+        let (schema, query) = users();
+        let mut values = Values::new();
+        let role = query.variables.iter().find(|v| v.name == "role").unwrap();
+        values.insert(role.path.clone(), "ADMIN".to_string());
+        let map = to_json(&schema, &query.variables, &values).unwrap();
+        assert_eq!(serde_json::Value::Object(map), json!({"role": "ADMIN"}));
+    }
+
+    #[test]
+    fn to_json_names_the_first_problem() {
+        let (schema, query) = users();
+        let mut values = Values::new();
+        let floor = query.variables.iter().find(|v| v.name == "floor").unwrap();
+        values.insert(floor.path.clone(), "abc".to_string());
+        assert_eq!(
+            to_json(&schema, &query.variables, &values),
+            Err("$floor: expected a number".to_string())
+        );
+
+        let op = OperationRef::parse(&schema, "Query.node").unwrap();
+        let selection = parse_select(&schema, &op, "id").unwrap();
+        let node = generate(&schema, &op, &selection).unwrap();
+        assert_eq!(
+            to_json(&schema, &node.variables, &Values::new()),
+            Err("$id: required".to_string())
+        );
     }
 }
