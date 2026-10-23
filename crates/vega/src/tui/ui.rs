@@ -8,7 +8,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::app::{App, Edit, Focus, StatusLevel, VariableRow};
+use crate::tui::app::{App, Edit, Focus, RunState, StatusLevel, VariableRow};
+use vega_core::response::LineKind;
 use vega_core::selection::{NodeKind, Row};
 use vega_core::variables::{self, State};
 
@@ -30,8 +31,17 @@ pub fn draw(frame: &mut Frame, app: &App, now: u64) {
             let columns =
                 Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                     .split(rows[1]);
-            draw_details(frame, columns[0], app, &tree, cursor);
-            draw_query(frame, columns[1], app);
+            if app
+                .design
+                .as_ref()
+                .is_some_and(|design| design.run.is_some())
+            {
+                draw_query(frame, columns[0], app);
+                draw_response(frame, columns[1], app);
+            } else {
+                draw_details(frame, columns[0], app, &tree, cursor);
+                draw_query(frame, columns[1], app);
+            }
         } else {
             draw_details(frame, rows[1], app, &tree, cursor);
         }
@@ -206,6 +216,50 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App, rows: &[Row], cursor: 
     );
 }
 
+/// The Response pane: status and timing in the title, errors in red, data below.
+fn draw_response(frame: &mut Frame, area: Rect, app: &App) {
+    let focused = has_focus(app, Focus::Response);
+    let Some(run) = app.design.as_ref().and_then(|design| design.run.as_ref()) else {
+        return;
+    };
+    let red = Style::default().fg(Color::Red);
+    let dim = Style::default().fg(Color::DarkGray);
+    let (title, title_style, lines): (String, Style, Vec<Line>) = match &run.state {
+        RunState::Running => (
+            "Response · running…".to_string(),
+            Style::default(),
+            vec![Line::styled("Waiting for the server…", dim)],
+        ),
+        RunState::Failed(message) => (
+            "Response · failed".to_string(),
+            red,
+            vec![Line::styled(message.clone(), red)],
+        ),
+        RunState::Done(view) => {
+            let title = format!("Response · HTTP {} · {} ms", view.status, view.elapsed_ms);
+            let style = if view.ok() { Style::default() } else { red };
+            let lines = view
+                .body_lines()
+                .into_iter()
+                .skip(run.scroll)
+                .take(usize::from(area.height))
+                .map(|(kind, text)| match kind {
+                    LineKind::Error => Line::styled(text, red),
+                    LineKind::Note => Line::styled(text, dim),
+                    LineKind::Data if view.not_json => Line::styled(text, red),
+                    LineKind::Data => Line::raw(text),
+                })
+                .collect();
+            (title, style, lines)
+        }
+    };
+    let mut block = pane(&title, focused);
+    if title_style != Style::default() && !focused {
+        block = block.title_style(title_style);
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 /// The generated query over the variables it needs.
 fn draw_query(frame: &mut Frame, area: Rect, app: &App) {
     let parts = split_column(area);
@@ -317,6 +371,9 @@ mod tests {
     use super::*;
     use crate::tui::app::App;
     use ratatui::{backend::TestBackend, style::Color, Terminal};
+    use std::time::Duration;
+    use vega_core::client::Response;
+    use vega_core::response;
     use vega_core::schema::IntrospectionResponse;
 
     const FIXTURE: &str = include_str!("../../../vega-core/tests/fixtures/introspection.json");
@@ -601,5 +658,107 @@ mod tests {
         }
         press_key(&mut app, KeyCode::Enter);
         assert!(screen(&render(&app, 1_000)).contains("= abc  ← expected a number"));
+    }
+
+    fn view_of(status: u16, body: &str) -> response::ResponseView {
+        response::view(&Response {
+            status,
+            elapsed: Duration::from_millis(12),
+            body: body.to_string(),
+        })
+    }
+
+    /// Query.me with `id` selected, after pressing `r` (request 1 is in flight).
+    fn running_app() -> App {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = design_app_on("me");
+        press_key(&mut app, KeyCode::Down);
+        press_key(&mut app, KeyCode::Char(' '));
+        press_key(&mut app, KeyCode::Char('r'));
+        app
+    }
+
+    #[test]
+    fn run_mode_shows_query_variables_and_response_without_the_tree() {
+        let mut app = running_app();
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("Query"));
+        assert!(text.contains("Variables"));
+        assert!(text.contains("Response"));
+        assert!(text.contains("running"));
+        assert!(text.contains("Waiting for the server"));
+        assert!(!text.contains("Details"));
+        assert!(!text.contains("Description"));
+
+        app.apply_run_result(1, Ok(view_of(200, r#"{"data":{"me":{"id":"1"}}}"#)));
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("HTTP 200"));
+        assert!(text.contains("12 ms"));
+        assert!(text.contains(r#""id": "1""#));
+    }
+
+    #[test]
+    fn graphql_errors_and_data_are_both_shown() {
+        let mut app = running_app();
+        app.apply_run_result(
+            1,
+            Ok(view_of(
+                200,
+                r#"{"data":{"me":null},"errors":[{"message":"boom"}]}"#,
+            )),
+        );
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("error: boom"));
+        assert!(text.contains("null"));
+    }
+
+    #[test]
+    fn failures_and_http_errors_show_in_the_response_pane() {
+        let mut app = running_app();
+        app.apply_run_result(1, Err("request failed: connection refused".to_string()));
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("failed"));
+        assert!(text.contains("connection refused"));
+
+        let mut app = running_app();
+        app.apply_run_result(1, Ok(view_of(500, "boom")));
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("HTTP 500"));
+        assert!(text.contains("boom"));
+    }
+
+    #[test]
+    fn scrolling_moves_the_first_visible_line() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = running_app();
+        let numbers: Vec<String> = (1000..1060).map(|n| n.to_string()).collect();
+        let body = format!(r#"{{"data":[{}]}}"#, numbers.join(","));
+        app.apply_run_result(1, Ok(view_of(200, &body)));
+        assert!(screen(&render(&app, 1_000)).contains("1000"));
+        for _ in 0..3 {
+            press_key(&mut app, KeyCode::PageDown);
+        }
+        let text = screen(&render(&app, 1_000));
+        assert!(!text.contains("1000,"), "scrolled past the top");
+        assert!(text.contains("1032"));
+    }
+
+    #[test]
+    fn a_notice_shows_in_the_status_bar() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = design_app_on("me");
+        press_key(&mut app, KeyCode::Char('r'));
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("select at least one field to run"));
+    }
+
+    #[test]
+    fn run_mode_does_not_panic_on_tiny_terminals() {
+        let mut app = running_app();
+        app.apply_run_result(1, Ok(view_of(200, r#"{"data":{"me":{"id":"1"}}}"#)));
+        for (w, h) in [(20, 5), (1, 1), (0, 0), (3, 40), (80, 24)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|frame| draw(frame, &app, 1_000)).unwrap();
+        }
     }
 }
