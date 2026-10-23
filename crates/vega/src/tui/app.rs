@@ -4,17 +4,53 @@ use std::collections::{BTreeSet, HashMap};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use vega_core::cache::{format_age, is_stale};
+use vega_core::client;
 use vega_core::querygen::{self, GenerateError, GeneratedQuery, VariableDef};
-use vega_core::schema::Schema;
+use vega_core::response::ResponseView;
+use vega_core::schema::{Root, Schema};
 use vega_core::search::{self, Hit};
 use vega_core::selection::{self, Path, Row, Seg, Selection, TreeRoot};
 use vega_core::variables::{self, Editor, State, Values};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     None,
     /// The event loop should start a background schema refresh.
     Refresh,
+    /// The event loop should send this request on a background thread.
+    Run(RunRequest),
+}
+
+/// A request ready to be sent; `seq` ties the result to it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunRequest {
+    pub seq: u64,
+    pub body: serde_json::Value,
+}
+
+/// What the Response pane shows.
+// TODO: remove the allow once the event loop reports run results.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunState {
+    Running,
+    Done(ResponseView),
+    /// No HTTP response at all (connection failure, timeout).
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunView {
+    pub state: RunState,
+    /// First visible line of `ResponseView::body_lines`.
+    pub scroll: usize,
+}
+
+/// A mutation waiting for `y`.
+#[derive(Debug, Clone)]
+struct PendingRun {
+    request: RunRequest,
+    name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +66,7 @@ pub enum RefreshState {
 pub enum StatusLevel {
     Fresh,
     Stale,
+    Notice,
 }
 
 /// Hotkeys in Browse mode as (keys, description); shown by the help modal.
@@ -49,7 +86,24 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("Space", "Select or unselect a field"),
     ("Tab", "Move to the next pane"),
     ("Enter", "Edit the highlighted variable (Variables pane)"),
+    ("r", "Run the query"),
     ("Esc", "Back to the results"),
+    ("q / Ctrl-Q", "Quit"),
+    ("Ctrl-R", "Refresh the schema"),
+    ("h / ? / F1", "Show or hide this help"),
+];
+
+/// Hotkeys in Run mode.
+pub const RUN_KEYS: &[(&str, &str)] = &[
+    (
+        "↑ / ↓",
+        "Scroll the response (move through the variables when they have focus)",
+    ),
+    ("PgUp / PgDn", "Scroll the response ten lines"),
+    ("Tab", "Switch between Response and Variables"),
+    ("Enter", "Edit the highlighted variable (Variables pane)"),
+    ("r", "Run the query again"),
+    ("Esc", "Back to Design"),
     ("q / Ctrl-Q", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
     ("h / ? / F1", "Show or hide this help"),
@@ -61,6 +115,7 @@ pub enum Focus {
     Details,
     Query,
     Variables,
+    Response,
 }
 
 /// An edit in progress in the Variables pane.
@@ -92,6 +147,8 @@ pub struct DesignState {
     pub values: Values,
     pub var_cursor: usize,
     pub edit: Option<Edit>,
+    /// `Some` means Run mode.
+    pub run: Option<RunView>,
 }
 
 impl DesignState {
@@ -107,6 +164,7 @@ impl DesignState {
             values: Values::new(),
             var_cursor: 0,
             edit: None,
+            run: None,
         }
     }
 
@@ -128,6 +186,11 @@ pub struct App {
     pub refresh: RefreshState,
     pub should_quit: bool,
     pub help_open: bool,
+    /// A one-key message shown in the status line; the next key clears it.
+    notice: Option<String>,
+    confirm: Option<PendingRun>,
+    run_seq: u64,
+    run_in_flight: bool,
 }
 
 /// `https://nexus.example.com/graphql` becomes `nexus.example.com`.
@@ -164,10 +227,15 @@ impl App {
             refresh: RefreshState::Idle,
             should_quit: false,
             help_open: false,
+            notice: None,
+            confirm: None,
+            run_seq: 0,
+            run_in_flight: false,
         }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        self.notice = None;
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
                 KeyCode::Char('q') => {
@@ -187,6 +255,13 @@ impl App {
             }
             return Action::None;
         }
+        if let Some(pending) = self.confirm.take() {
+            return if matches!(key.code, KeyCode::Char('y' | 'Y')) {
+                self.start_run(pending.request)
+            } else {
+                Action::None
+            };
+        }
         if self.is_editing() {
             self.handle_edit_key(key.code);
             return Action::None;
@@ -201,10 +276,9 @@ impl App {
             return Action::None;
         }
         if self.design.is_some() {
-            self.handle_design_key(key.code);
-        } else {
-            self.handle_search_key(key.code);
+            return self.handle_design_key(key.code);
         }
+        self.handle_search_key(key.code);
         Action::None
     }
 
@@ -322,9 +396,13 @@ impl App {
         }
     }
 
-    fn handle_design_key(&mut self, code: KeyCode) {
+    fn handle_design_key(&mut self, code: KeyCode) -> Action {
+        if self.in_run_mode() {
+            return self.handle_run_key(code);
+        }
         match code {
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('r') => return self.request_run(),
             KeyCode::Esc => self.leave_design(),
             KeyCode::Tab => self.next_focus(),
             KeyCode::Up if self.focused(Focus::Variables) => self.move_var_cursor(-1),
@@ -341,6 +419,130 @@ impl App {
             KeyCode::Left => self.collapse_or_go_up(),
             _ => {}
         }
+        Action::None
+    }
+
+    fn in_run_mode(&self) -> bool {
+        self.design
+            .as_ref()
+            .is_some_and(|design| design.run.is_some())
+    }
+
+    fn handle_run_key(&mut self, code: KeyCode) -> Action {
+        match code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('r') => return self.request_run(),
+            KeyCode::Esc => {
+                if let Some(design) = self.design.as_mut() {
+                    design.run = None;
+                    design.focus = Focus::Details;
+                }
+            }
+            KeyCode::Tab => {
+                if let Some(design) = self.design.as_mut() {
+                    design.focus = if design.focus == Focus::Response {
+                        Focus::Variables
+                    } else {
+                        Focus::Response
+                    };
+                }
+            }
+            KeyCode::Up if self.focused(Focus::Variables) => self.move_var_cursor(-1),
+            KeyCode::Down if self.focused(Focus::Variables) => self.move_var_cursor(1),
+            KeyCode::Enter if self.focused(Focus::Variables) => self.start_edit(),
+            KeyCode::Up if self.focused(Focus::Response) => self.scroll_response(-1),
+            KeyCode::Down if self.focused(Focus::Response) => self.scroll_response(1),
+            KeyCode::PageUp if self.focused(Focus::Response) => self.scroll_response(-10),
+            KeyCode::PageDown if self.focused(Focus::Response) => self.scroll_response(10),
+            _ => {}
+        }
+        Action::None
+    }
+
+    fn scroll_response(&mut self, delta: isize) {
+        let last = match self.design.as_ref().and_then(|design| design.run.as_ref()) {
+            Some(RunView {
+                state: RunState::Done(view),
+                ..
+            }) => view.body_lines().len().saturating_sub(1),
+            _ => 0,
+        };
+        if let Some(run) = self.design.as_mut().and_then(|design| design.run.as_mut()) {
+            run.scroll = run.scroll.saturating_add_signed(delta).min(last);
+        }
+    }
+
+    /// `r`: check that the query can run, then send it (a mutation asks first).
+    fn request_run(&mut self) -> Action {
+        let Some(design) = self.design.as_ref() else {
+            return Action::None;
+        };
+        let values = design.values.clone();
+        let Some(operation) = design.root.operation().cloned() else {
+            return self.notify("type trees cannot be run");
+        };
+        if operation.root == Root::Subscription {
+            return self.notify("subscriptions cannot be run (they need WebSockets)");
+        }
+        if self.run_in_flight {
+            return self.notify("a request is already running");
+        }
+        let query = match self.generated_query() {
+            Some(Ok(query)) => query,
+            _ => return self.notify("select at least one field to run"),
+        };
+        let variables = match variables::to_json(&self.schema, &query.variables, &values) {
+            Ok(variables) => variables,
+            Err(problem) => return self.notify(&format!("cannot run: variable {problem}")),
+        };
+        self.run_seq += 1;
+        let request = RunRequest {
+            seq: self.run_seq,
+            body: client::operation_body(&query.operation_name, &query.text, &variables),
+        };
+        if operation.root == Root::Mutation {
+            self.confirm = Some(PendingRun {
+                request,
+                name: query.operation_name,
+            });
+            return Action::None;
+        }
+        self.start_run(request)
+    }
+
+    fn notify(&mut self, message: &str) -> Action {
+        self.notice = Some(message.to_string());
+        Action::None
+    }
+
+    fn start_run(&mut self, request: RunRequest) -> Action {
+        self.run_in_flight = true;
+        if let Some(design) = self.design.as_mut() {
+            design.run = Some(RunView {
+                state: RunState::Running,
+                scroll: 0,
+            });
+            design.focus = Focus::Response;
+        }
+        Action::Run(request)
+    }
+
+    /// The result of request `seq`. It is shown only if Run mode is still open for that
+    /// request; either way the one request slot is free again.
+    // TODO: remove the allow once the event loop calls this.
+    #[allow(dead_code)]
+    pub fn apply_run_result(&mut self, seq: u64, outcome: Result<ResponseView, String>) {
+        self.run_in_flight = false;
+        if seq != self.run_seq {
+            return;
+        }
+        if let Some(run) = self.design.as_mut().and_then(|design| design.run.as_mut()) {
+            run.state = match outcome {
+                Ok(view) => RunState::Done(view),
+                Err(message) => RunState::Failed(message),
+            };
+            run.scroll = 0;
+        }
     }
 
     /// Details, then Query, then Variables, then back. A type tree has only Details.
@@ -354,7 +556,7 @@ impl App {
         design.focus = match design.focus {
             Focus::Details => Focus::Query,
             Focus::Query => Focus::Variables,
-            Focus::Variables => Focus::Details,
+            Focus::Variables | Focus::Response => Focus::Details,
         };
     }
 
@@ -532,7 +734,9 @@ impl App {
     }
 
     pub fn help_keys(&self) -> &'static [(&'static str, &'static str)] {
-        if self.design.is_some() {
+        if self.in_run_mode() {
+            RUN_KEYS
+        } else if self.design.is_some() {
             DESIGN_KEYS
         } else {
             BROWSE_KEYS
@@ -543,6 +747,7 @@ impl App {
         self.schema = schema;
         self.fetched_at = fetched_at;
         self.design = None;
+        self.confirm = None;
         self.sessions.clear();
         self.refresh = RefreshState::Idle;
         self.rerun_search();
@@ -561,6 +766,15 @@ impl App {
 
     /// Status bar text and its staleness level at time `now` (unix seconds).
     pub fn status(&self, now: u64) -> (String, StatusLevel) {
+        if let Some(pending) = &self.confirm {
+            return (
+                format!("Run mutation {}? y/N", pending.name),
+                StatusLevel::Notice,
+            );
+        }
+        if let Some(notice) = &self.notice {
+            return (notice.clone(), StatusLevel::Notice);
+        }
         let age = now.saturating_sub(self.fetched_at);
         let level = if is_stale(age) {
             StatusLevel::Stale
@@ -590,6 +804,9 @@ impl App {
 mod tests {
     use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::time::Duration;
+    use vega_core::client::Response;
+    use vega_core::response;
     use vega_core::schema::IntrospectionResponse;
     use vega_core::selection::Seg;
 
@@ -1524,5 +1741,228 @@ mod tests {
         let mut app = design_app();
         open_me(&mut app);
         assert!(app.help_keys().iter().any(|(keys, _)| *keys == "Enter"));
+    }
+
+    fn view_of(status: u16, body: &str) -> response::ResponseView {
+        response::view(&Response {
+            status,
+            elapsed: Duration::from_millis(5),
+            body: body.to_string(),
+        })
+    }
+
+    /// Opens Query.me with `id` selected.
+    fn me_with_id(app: &mut App) {
+        open_me(app);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Char(' '));
+    }
+
+    fn run_request(action: Action) -> RunRequest {
+        match action {
+            Action::Run(request) => request,
+            other => panic!("expected Action::Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn r_sends_the_generated_query_and_enters_run_mode() {
+        let mut app = design_app();
+        me_with_id(&mut app);
+        let request = run_request(press(&mut app, KeyCode::Char('r')));
+        assert_eq!(request.seq, 1);
+        assert_eq!(request.body["operationName"], "Me");
+        assert_eq!(request.body["query"], "query Me {\n  me {\n    id\n  }\n}");
+        assert_eq!(request.body["variables"], serde_json::json!({}));
+        let design = app.design.as_ref().unwrap();
+        assert_eq!(design.run.as_ref().unwrap().state, RunState::Running);
+        assert_eq!(design.focus, Focus::Response);
+    }
+
+    #[test]
+    fn r_uses_the_typed_variable_values() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "42");
+        press(&mut app, KeyCode::Enter);
+        let request = run_request(press(&mut app, KeyCode::Char('r')));
+        assert_eq!(request.body["variables"], serde_json::json!({"id": "42"}));
+    }
+
+    #[test]
+    fn r_is_text_while_a_variable_is_being_edited() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(press(&mut app, KeyCode::Char('r')), Action::None);
+        assert!(app.is_editing());
+    }
+
+    #[test]
+    fn r_explains_why_it_cannot_run() {
+        let mut app = design_app();
+        open_me(&mut app);
+        assert_eq!(press(&mut app, KeyCode::Char('r')), Action::None);
+        assert!(app
+            .status(1_000)
+            .0
+            .contains("select at least one field to run"));
+        assert_eq!(app.status(1_000).1, StatusLevel::Notice);
+        press(&mut app, KeyCode::Down); // any key clears the notice
+        assert!(!app.status(1_000).0.contains("select at least one field"));
+
+        let mut app = design_app();
+        type_text(&mut app, "node");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // id, but $id is empty
+        assert_eq!(press(&mut app, KeyCode::Char('r')), Action::None);
+        assert!(app
+            .status(1_000)
+            .0
+            .contains("cannot run: variable $id: required"));
+        assert!(app.design.as_ref().unwrap().run.is_none());
+
+        let mut app = design_app();
+        type_text(&mut app, "postinput");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(press(&mut app, KeyCode::Char('r')), Action::None);
+        assert!(app.status(1_000).0.contains("type trees cannot be run"));
+    }
+
+    #[test]
+    fn only_one_request_runs_at_a_time() {
+        let mut app = design_app();
+        me_with_id(&mut app);
+        run_request(press(&mut app, KeyCode::Char('r')));
+        assert_eq!(press(&mut app, KeyCode::Char('r')), Action::None);
+        assert!(app.status(1_000).0.contains("a request is already running"));
+
+        app.apply_run_result(1, Ok(view_of(200, r#"{"data":{"me":null}}"#)));
+        let again = run_request(press(&mut app, KeyCode::Char('r')));
+        assert_eq!(again.seq, 2);
+    }
+
+    #[test]
+    fn a_mutation_asks_for_confirmation_first() {
+        let mut app = design_app();
+        type_text(&mut app, "postCreate");
+        assert_eq!(app.hits[0].path, "Mutation.postCreate");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // id
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, r#"{"title":"x"}"#);
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(press(&mut app, KeyCode::Char('r')), Action::None);
+        assert_eq!(app.status(1_000).0, "Run mutation PostCreate? y/N");
+        assert_eq!(press(&mut app, KeyCode::Char('n')), Action::None);
+        assert!(app.design.as_ref().unwrap().run.is_none());
+        assert!(!app.status(1_000).0.contains("Run mutation"));
+
+        press(&mut app, KeyCode::Char('r'));
+        let request = run_request(press(&mut app, KeyCode::Char('y')));
+        assert_eq!(request.body["operationName"], "PostCreate");
+        assert_eq!(
+            request.body["variables"],
+            serde_json::json!({"input": {"title": "x"}})
+        );
+    }
+
+    #[test]
+    fn results_fill_the_response_and_stale_ones_are_discarded() {
+        let mut app = design_app();
+        me_with_id(&mut app);
+        run_request(press(&mut app, KeyCode::Char('r')));
+        app.apply_run_result(1, Ok(view_of(200, r#"{"data":{"me":{"id":"1"}}}"#)));
+        let run = app.design.as_ref().unwrap().run.as_ref().unwrap();
+        assert!(matches!(&run.state, RunState::Done(view) if view.status == 200));
+
+        // A result for a request that was left behind changes nothing.
+        press(&mut app, KeyCode::Char('r'));
+        press(&mut app, KeyCode::Esc); // back to Design while request 2 runs
+        assert!(app.design.as_ref().unwrap().run.is_none());
+        app.apply_run_result(2, Ok(view_of(200, "{}")));
+        assert!(app.design.as_ref().unwrap().run.is_none());
+        // ...but it freed the "in flight" slot.
+        run_request(press(&mut app, KeyCode::Char('r')));
+        app.apply_run_result(3, Err("request failed".to_string()));
+        let run = app.design.as_ref().unwrap().run.as_ref().unwrap();
+        assert_eq!(run.state, RunState::Failed("request failed".to_string()));
+    }
+
+    #[test]
+    fn run_mode_keys_scroll_switch_panes_and_go_back() {
+        let mut app = design_app();
+        me_with_id(&mut app);
+        run_request(press(&mut app, KeyCode::Char('r')));
+        let numbers: Vec<String> = (0..50).map(|n| n.to_string()).collect();
+        let body = format!(r#"{{"data":[{}]}}"#, numbers.join(","));
+        app.apply_run_result(1, Ok(view_of(200, &body)));
+
+        let scroll = |app: &App| app.design.as_ref().unwrap().run.as_ref().unwrap().scroll;
+        press(&mut app, KeyCode::Up);
+        assert_eq!(scroll(&app), 0);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(scroll(&app), 2);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(scroll(&app), 12);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(scroll(&app), 2);
+        for _ in 0..10 {
+            press(&mut app, KeyCode::PageDown);
+        }
+        assert_eq!(scroll(&app), 51); // 52 lines: the last line stays visible
+
+        // Tab switches between Response and Variables; the arrows then move variables.
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.design.as_ref().unwrap().focus, Focus::Variables);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(scroll(&app), 51);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.design.as_ref().unwrap().focus, Focus::Response);
+
+        // Esc returns to Design with the selection intact.
+        press(&mut app, KeyCode::Esc);
+        let design = app.design.as_ref().unwrap();
+        assert!(design.run.is_none());
+        assert_eq!(design.focus, Focus::Details);
+        assert!(app.is_selected(&[Seg::Field("id".to_string())]));
+    }
+
+    #[test]
+    fn q_quits_in_run_mode_and_help_lists_the_run_keys() {
+        let mut app = design_app();
+        me_with_id(&mut app);
+        run_request(press(&mut app, KeyCode::Char('r')));
+        assert!(app
+            .help_keys()
+            .iter()
+            .any(|(keys, _)| keys.contains("PgDn")));
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit);
+
+        let mut app = design_app();
+        open_me(&mut app);
+        assert!(app.help_keys().iter().any(|(keys, _)| *keys == "r"));
+    }
+
+    #[test]
+    fn a_refresh_drops_run_mode_and_a_late_result() {
+        let mut app = design_app();
+        me_with_id(&mut app);
+        run_request(press(&mut app, KeyCode::Char('r')));
+        let response: IntrospectionResponse = serde_json::from_str(DESIGN_FIXTURE).unwrap();
+        app.apply_refresh_ok(response.data.schema, 5_000);
+        assert!(app.design.is_none());
+        app.apply_run_result(1, Ok(view_of(200, "{}")));
+        assert!(app.design.is_none());
     }
 }
