@@ -29,8 +29,6 @@ pub struct RunRequest {
 }
 
 /// What the Response pane shows.
-// TODO: remove the allow once the event loop reports run results.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunState {
     Running,
@@ -529,8 +527,6 @@ impl App {
 
     /// The result of request `seq`. It is shown only if Run mode is still open for that
     /// request; either way the one request slot is free again.
-    // TODO: remove the allow once the event loop calls this.
-    #[allow(dead_code)]
     pub fn apply_run_result(&mut self, seq: u64, outcome: Result<ResponseView, String>) {
         self.run_in_flight = false;
         if seq != self.run_seq {
