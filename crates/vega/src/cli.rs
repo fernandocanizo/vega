@@ -23,7 +23,8 @@ pub struct Cli {
     #[arg(long, value_name = "TARGET")]
     pub describe: Option<String>,
 
-    /// Print the query generated for OPERATION (e.g. Query.userRead); sends nothing
+    /// Print the query generated for OPERATION (e.g. Query.userRead); sends nothing unless
+    /// --run is given
     #[arg(long, value_name = "OPERATION", conflicts_with_all = ["search", "describe"])]
     pub query: Option<String>,
 
@@ -37,7 +38,15 @@ pub struct Cli {
     #[arg(long = "var", value_name = "NAME=VALUE", requires = "query")]
     pub vars: Vec<String>,
 
-    /// Print JSON on stdout for --search, --describe and --query
+    /// Send the --query operation to the server and print the response
+    #[arg(long, requires = "query")]
+    pub run: bool,
+
+    /// Run a mutation without asking first (required when there is no terminal)
+    #[arg(long, requires = "run")]
+    pub yes: bool,
+
+    /// Print JSON on stdout for --search, --describe, --query and --run
     #[arg(long)]
     pub json: bool,
 }
