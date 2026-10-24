@@ -202,3 +202,137 @@ fn execute_sends_every_header_and_masks_each_value() {
     assert!(!response.body.contains("tok-123"), "{}", response.body);
     assert!(!response.body.contains("team-9"), "{}", response.body);
 }
+
+/// Answers one request with a redirect (and an optional `Location`) and nothing else.
+fn serve_redirect(status_line: &'static str, location: Option<String>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let uri = format!("http://{}/graphql", listener.local_addr().unwrap());
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_request(&mut stream);
+        let location = location
+            .map(|location| format!("Location: {location}\r\n"))
+            .unwrap_or_default();
+        let response = format!(
+            "HTTP/1.1 {status_line}\r\n{location}Content-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+    uri
+}
+
+/// A listener on another origin, to check that a redirect never reaches it. Returns it
+/// with its base URL.
+fn bystander() -> (TcpListener, String) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    (listener, base)
+}
+
+fn nothing_connected(listener: &TcpListener) -> bool {
+    matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+}
+
+#[test]
+fn a_redirect_is_reported_and_nothing_is_sent_to_its_target() {
+    for status_line in [
+        "301 Moved Permanently",
+        "302 Found",
+        "303 See Other",
+        "307 Temporary Redirect",
+        "308 Permanent Redirect",
+    ] {
+        let (target_listener, base) = bystander();
+        let uri = serve_redirect(status_line, Some(format!("{base}/landing")));
+        let err = fetch_introspection(&uri, &key("k1-secret")).unwrap_err();
+        let status: u16 = status_line[..3].parse().unwrap();
+        match &err {
+            ClientError::Redirected {
+                status: got,
+                target,
+            } => {
+                assert_eq!(*got, status, "{status_line}");
+                assert_eq!(target.as_deref(), Some(format!("{base}/landing").as_str()));
+            }
+            other => panic!("{status_line}: unexpected error: {other}"),
+        }
+        assert!(
+            nothing_connected(&target_listener),
+            "the redirect target was contacted ({status_line})"
+        );
+    }
+}
+
+#[test]
+fn execute_reports_a_redirect_too_and_contacts_nobody_else() {
+    let (target_listener, base) = bystander();
+    let uri = serve_redirect("307 Temporary Redirect", Some(format!("{base}/landing")));
+    let err = execute(&uri, &key("k1-secret"), &me_body()).unwrap_err();
+    assert!(
+        matches!(err, ClientError::Redirected { status: 307, .. }),
+        "{err}"
+    );
+    assert!(nothing_connected(&target_listener));
+}
+
+#[test]
+fn the_redirect_message_names_the_status_and_the_target() {
+    let (_target_listener, base) = bystander();
+    let uri = serve_redirect("301 Moved Permanently", Some(format!("{base}/landing")));
+    let message = fetch_introspection(&uri, &[]).unwrap_err().to_string();
+    assert_eq!(
+        message,
+        format!(
+            "server redirected the request (HTTP 301) to {base}/landing: use that URL as the endpoint"
+        )
+    );
+}
+
+#[test]
+fn a_relative_location_is_resolved_against_the_endpoint() {
+    let uri = serve_redirect("301 Moved Permanently", Some("/v2/graphql".to_string()));
+    let origin = uri.trim_end_matches("/graphql").to_string();
+    match fetch_introspection(&uri, &[]).unwrap_err() {
+        ClientError::Redirected { target, .. } => {
+            assert_eq!(target, Some(format!("{origin}/v2/graphql")));
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn the_target_has_no_query_fragment_or_credentials() {
+    let (_target_listener, base) = bystander();
+    let host = base.trim_start_matches("http://");
+    let location = format!("http://user:pw-secret@{host}/landing?token=abc-secret#frag");
+    let uri = serve_redirect("301 Moved Permanently", Some(location));
+    let message = fetch_introspection(&uri, &[]).unwrap_err().to_string();
+    assert!(
+        message.contains(&format!("to {base}/landing:")),
+        "{message}"
+    );
+    for secret in ["pw-secret", "abc-secret", "frag", "user"] {
+        assert!(!message.contains(secret), "{secret} leaked: {message}");
+    }
+}
+
+#[test]
+fn a_redirect_without_a_location_says_so() {
+    let uri = serve_redirect("301 Moved Permanently", None);
+    let message = fetch_introspection(&uri, &[]).unwrap_err().to_string();
+    assert_eq!(
+        message,
+        "server redirected the request (HTTP 301) without saying where to"
+    );
+}
+
+#[test]
+fn other_statuses_are_still_not_redirects() {
+    let (uri, _rx) = serve_once("304 Not Modified", String::new());
+    let err = fetch_introspection(&uri, &[]).unwrap_err();
+    assert!(
+        matches!(err, ClientError::Status { status: 304, .. }),
+        "{err}"
+    );
+}

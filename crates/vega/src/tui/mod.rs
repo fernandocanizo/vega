@@ -285,6 +285,25 @@ mod tests {
     }
 
     #[test]
+    fn a_redirected_fetch_tells_the_user_where_to_point_vega() {
+        let mut app = App::empty(settings("https://old.example.com/graphql", None));
+        let redirect = client::ClientError::Redirected {
+            status: 301,
+            target: Some("https://new.example.com/graphql".to_string()),
+        };
+        let error = anyhow::Error::new(redirect)
+            .context("fetching the schema from https://old.example.com/graphql");
+        apply_fetch(&mut app, Path::new("/nonexistent/cache.json"), Err(error));
+        let (text, _) = app.status(0);
+        assert!(
+            text.contains(
+                "server redirected the request (HTTP 301) to https://new.example.com/graphql"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn a_failed_fetch_shows_a_masked_error_in_the_status_bar() {
         let settings = settings("http://127.0.0.1:9/graphql", Some("secret-key"));
         let mut app = App::empty(settings);
