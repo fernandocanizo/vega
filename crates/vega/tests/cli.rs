@@ -82,6 +82,15 @@ const RUN_ARGS: [&str; 7] = [
 /// Serves exactly one request on a random local port; returns the endpoint URL and a
 /// channel that yields the raw request text.
 fn serve_once(status_line: &'static str, body: &str) -> (String, mpsc::Receiver<String>) {
+    serve_with_headers(status_line, "", body)
+}
+
+/// Like `serve_once`, with extra response header lines (each ending in `\r\n`).
+fn serve_with_headers(
+    status_line: &'static str,
+    extra_headers: &'static str,
+    body: &str,
+) -> (String, mpsc::Receiver<String>) {
     let body = body.to_string();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let uri = format!("http://{}/graphql", listener.local_addr().unwrap());
@@ -110,7 +119,7 @@ fn serve_once(status_line: &'static str, body: &str) -> (String, mpsc::Receiver<
         }
         tx.send(String::from_utf8_lossy(&buf).into_owned()).unwrap();
         let response = format!(
-            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(response.as_bytes()).unwrap();
@@ -841,4 +850,33 @@ fn the_key_alone_still_goes_in_the_x_api_key_header() {
     let cache = seeded_cache_for(&uri, 60);
     vega_env(&cache, &uri, &[("VEGA_GRAPHQL_KEY", "k-1")], &RUN_ARGS);
     assert!(rx.recv().unwrap().to_lowercase().contains("x-api-key: k-1"));
+}
+
+#[test]
+fn a_redirect_is_reported_and_the_key_never_reaches_the_target() {
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    target.set_nonblocking(true).unwrap();
+    let landing = format!("http://{}/graphql", target.local_addr().unwrap());
+    let location: &'static str = Box::leak(format!("Location: {landing}\r\n").into_boxed_str());
+    let (uri, _rx) = serve_with_headers("301 Moved Permanently", location, "");
+    let cache = tempfile::tempdir().unwrap(); // nothing cached: vega has to fetch
+    let out = vega_env(
+        &cache,
+        &uri,
+        &[("VEGA_GRAPHQL_KEY", "k1-secret")],
+        &["--search", "x"],
+    );
+    assert!(!out.status.success());
+    assert_eq!(stdout(&out), "");
+    let message = stderr(&out);
+    assert!(
+        message.contains("server redirected the request (HTTP 301)"),
+        "{message}"
+    );
+    assert!(message.contains(&landing), "{message}");
+    assert!(!message.contains("k1-secret"), "{message}");
+    assert!(
+        matches!(target.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+        "the redirect target was contacted"
+    );
 }

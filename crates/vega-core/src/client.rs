@@ -47,12 +47,23 @@ pub enum ClientError {
     Http(#[from] reqwest::Error),
     #[error("server answered HTTP {status}: {body}")]
     Status { status: u16, body: String },
+    /// Redirects are never followed: the request would become a `GET`, and the headers
+    /// (which hold the credentials) would go to whatever origin the answer names.
+    #[error("server redirected the request (HTTP {status}) {}", redirect_hint(.target))]
+    Redirected { status: u16, target: Option<String> },
     #[error("response is not a valid introspection result: {0}")]
     InvalidJson(serde_json::Error),
     #[error("server returned GraphQL errors: {0}")]
     Graphql(String),
     #[error("response has no `data`")]
     MissingData,
+}
+
+fn redirect_hint(target: &Option<String>) -> String {
+    match target {
+        Some(target) => format!("to {target}: use that URL as the endpoint"),
+        None => "without saying where to".to_string(),
+    }
 }
 
 pub fn request_body() -> Value {
@@ -97,15 +108,21 @@ pub fn operation_body(operation_name: &str, query: &str, variables: &Map<String,
     json!({ "query": query, "variables": variables, "operationName": operation_name })
 }
 
-/// POSTs `body` as JSON with `headers` and returns the HTTP status, the response text
-/// and how long the round trip took.
-fn post(
-    uri: &str,
-    headers: &[Header],
-    body: &Value,
-) -> Result<(u16, String, Duration), reqwest::Error> {
+/// An answer as it came back.
+struct Raw {
+    status: u16,
+    text: String,
+    elapsed: Duration,
+    /// The `Location` header, for redirects.
+    location: Option<String>,
+}
+
+/// POSTs `body` as JSON with `headers`. Redirects are not followed: see
+/// `ClientError::Redirected`.
+fn post(uri: &str, headers: &[Header], body: &Value) -> Result<Raw, reqwest::Error> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let mut request = client.post(uri).json(body);
     for header in headers {
@@ -114,18 +131,55 @@ fn post(
     let started = Instant::now();
     let response = request.send()?;
     let status = response.status().as_u16();
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let text = response.text()?;
-    Ok((status, text, started.elapsed()))
+    Ok(Raw {
+        status,
+        text,
+        elapsed: started.elapsed(),
+        location,
+    })
 }
 
-/// Runs an operation. Any HTTP status is an `Ok` response; connection failures, timeouts
-/// and unreadable bodies are errors.
+/// A redirect is an error that says where the server wanted to go.
+fn check_redirect(uri: &str, raw: &Raw) -> Result<(), ClientError> {
+    if matches!(raw.status, 301 | 302 | 303 | 307 | 308) {
+        let target = raw
+            .location
+            .as_deref()
+            .and_then(|location| redirect_target(uri, location));
+        return Err(ClientError::Redirected {
+            status: raw.status,
+            target,
+        });
+    }
+    Ok(())
+}
+
+/// The target as an absolute URL, resolved against the endpoint, without user info, query
+/// or fragment: those may hold secrets, and the user only needs the address to switch to.
+fn redirect_target(uri: &str, location: &str) -> Option<String> {
+    let mut target = reqwest::Url::parse(uri).ok()?.join(location).ok()?;
+    target.set_query(None);
+    target.set_fragment(None);
+    let _ = target.set_username("");
+    let _ = target.set_password(None);
+    Some(target.to_string())
+}
+
+/// Runs an operation. Any other HTTP status is an `Ok` response; redirects, connection
+/// failures, timeouts and unreadable bodies are errors.
 pub fn execute(uri: &str, headers: &[Header], body: &Value) -> Result<Response, ClientError> {
-    let (status, text, elapsed) = post(uri, headers, body)?;
+    let raw = post(uri, headers, body)?;
+    check_redirect(uri, &raw)?;
     Ok(Response {
-        status,
-        elapsed,
-        body: headers::mask(&text, headers),
+        status: raw.status,
+        elapsed: raw.elapsed,
+        body: headers::mask(&raw.text, headers),
     })
 }
 
@@ -133,12 +187,19 @@ pub fn fetch_introspection(
     uri: &str,
     headers: &[Header],
 ) -> Result<IntrospectionResponse, ClientError> {
-    let (status, text, _elapsed) = post(uri, headers, &request_body())?;
-    if !(200..300).contains(&status) {
-        let body: String = headers::mask(&text, headers).chars().take(300).collect();
-        return Err(ClientError::Status { status, body });
+    let raw = post(uri, headers, &request_body())?;
+    check_redirect(uri, &raw)?;
+    if !(200..300).contains(&raw.status) {
+        let body: String = headers::mask(&raw.text, headers)
+            .chars()
+            .take(300)
+            .collect();
+        return Err(ClientError::Status {
+            status: raw.status,
+            body,
+        });
     }
-    parse_response(&text)
+    parse_response(&raw.text)
 }
 
 #[cfg(test)]
