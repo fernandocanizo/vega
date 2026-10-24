@@ -1,7 +1,8 @@
-//! Terminal setup and the event loop. Everything testable lives in `app` and `ui`.
+//! Terminal setup and the event loop. Everything testable lives in `app`, `connection`
+//! and `ui`.
 
 pub mod app;
-#[allow(dead_code)] // wired into the app in a later commit
+#[allow(dead_code)] // the drawing code in `ui` uses the rest in a later commit
 pub mod connection;
 pub mod ui;
 
@@ -13,7 +14,10 @@ use std::{
 };
 
 use ratatui::{
-    crossterm::event::{self, Event, KeyEventKind},
+    crossterm::{
+        event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind},
+        execute,
+    },
     DefaultTerminal,
 };
 use vega_core::cache::{self, CacheEntry};
@@ -26,17 +30,36 @@ use app::{Action, App, RunRequest};
 
 /// What background threads send back to the event loop.
 enum Update {
-    Schema(anyhow::Result<CacheEntry>),
+    /// A schema fetch. `seq` ties it to the load that started it, so the answer for an
+    /// endpoint the user has since left is dropped.
+    Schema {
+        seq: u64,
+        cache_file: PathBuf,
+        result: anyhow::Result<CacheEntry>,
+    },
     Run {
         seq: u64,
         outcome: Result<ResponseView, String>,
     },
 }
 
-pub fn run(entry: CacheEntry, settings: Settings, cache_file: PathBuf) -> anyhow::Result<()> {
-    let app = App::new(entry.response.data.schema, &settings.uri, entry.fetched_at);
+/// Runs the TUI. `entry` is the cached schema for the endpoint, if any; without one the
+/// schema is fetched in the background (or, with no endpoint, the connection modal
+/// opens).
+pub fn run(
+    entry: Option<CacheEntry>,
+    settings: Settings,
+    cache_dir: PathBuf,
+) -> anyhow::Result<()> {
+    let app = match entry {
+        Some(entry) => App::new(entry.response.data.schema, &settings.uri, entry.fetched_at)
+            .with_settings(settings),
+        None => App::empty(settings),
+    };
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, app, &settings, &cache_file);
+    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    let result = event_loop(&mut terminal, app, &cache_dir);
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
 }
@@ -44,52 +67,87 @@ pub fn run(entry: CacheEntry, settings: Settings, cache_file: PathBuf) -> anyhow
 fn event_loop(
     terminal: &mut DefaultTerminal,
     mut app: App,
-    settings: &Settings,
-    cache_file: &Path,
+    cache_dir: &Path,
 ) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel::<Update>();
+    let mut load_seq: u64 = 0;
+
+    if !app.is_loaded() && !app.settings().uri.is_empty() {
+        app.begin_load();
+        load_seq += 1;
+        spawn_fetch(&app, cache_dir, load_seq, &tx);
+    }
 
     while !app.should_quit {
         terminal.draw(|frame| ui::draw(frame, &app, cache::now_secs()))?;
 
         while let Ok(update) = rx.try_recv() {
             match update {
-                Update::Schema(result) => apply_fetch(&mut app, cache_file, result),
+                Update::Schema {
+                    seq,
+                    cache_file,
+                    result,
+                } => {
+                    if seq == load_seq {
+                        apply_fetch(&mut app, &cache_file, result);
+                    }
+                }
                 Update::Run { seq, outcome } => app.apply_run_result(seq, outcome),
             }
         }
 
         // Short poll so the status bar age keeps ticking and results show up.
         if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match app.handle_key(key) {
-                        Action::None => {}
-                        Action::Refresh => {
-                            let settings = settings.clone();
-                            let tx = tx.clone();
-                            thread::spawn(move || {
-                                let _ =
-                                    tx.send(Update::Schema(schema_source::fetch_entry(&settings)));
-                            });
-                        }
-                        Action::Run(request) => {
-                            let settings = settings.clone();
-                            let tx = tx.clone();
-                            thread::spawn(move || {
-                                let outcome = run_request(&settings, &request);
-                                let _ = tx.send(Update::Run {
-                                    seq: request.seq,
-                                    outcome,
-                                });
-                            });
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match app.handle_key(key) {
+                    Action::None => {}
+                    Action::Refresh => {
+                        load_seq += 1;
+                        spawn_fetch(&app, cache_dir, load_seq, &tx);
+                    }
+                    Action::Load => {
+                        load_seq += 1;
+                        let cache_file = cache::cache_path(cache_dir, &app.settings().uri);
+                        match cache::load(&cache_file) {
+                            Ok(Some(entry)) => {
+                                app.apply_refresh_ok(entry.response.data.schema, entry.fetched_at)
+                            }
+                            _ => spawn_fetch(&app, cache_dir, load_seq, &tx),
                         }
                     }
-                }
+                    Action::Run(request) => {
+                        let settings = app.settings().clone();
+                        let tx = tx.clone();
+                        thread::spawn(move || {
+                            let outcome = run_request(&settings, &request);
+                            let _ = tx.send(Update::Run {
+                                seq: request.seq,
+                                outcome,
+                            });
+                        });
+                    }
+                },
+                Event::Paste(text) => app.handle_paste(&text),
+                _ => {}
             }
         }
     }
     Ok(())
+}
+
+/// Fetches the schema of the app's current endpoint on a background thread.
+fn spawn_fetch(app: &App, cache_dir: &Path, seq: u64, tx: &mpsc::Sender<Update>) {
+    let settings = app.settings().clone();
+    let cache_file = cache::cache_path(cache_dir, &settings.uri);
+    let tx = tx.clone();
+    thread::spawn(move || {
+        let result = schema_source::fetch_entry(&settings);
+        let _ = tx.send(Update::Schema {
+            seq,
+            cache_file,
+            result,
+        });
+    });
 }
 
 /// Sends the request and summarizes the answer. A failure to get any HTTP answer comes
@@ -124,7 +182,10 @@ fn apply_fetch(app: &mut App, cache_file: &Path, result: anyhow::Result<CacheEnt
                 Err(e) => app.apply_refresh_unsaved(schema, fetched_at, e.to_string()),
             }
         }
-        Err(e) => app.apply_refresh_err(format!("{e:#}")),
+        Err(e) => {
+            let message = headers::mask(&format!("{e:#}"), &app.settings().headers);
+            app.apply_refresh_err(message);
+        }
     }
 }
 
@@ -216,5 +277,19 @@ mod tests {
         }
 
         assert_eq!(error_chain(&Outer(Inner)), "outer: inner");
+    }
+
+    #[test]
+    fn a_failed_fetch_shows_a_masked_error_in_the_status_bar() {
+        let settings = settings("http://127.0.0.1:9/graphql", Some("secret-key"));
+        let mut app = App::empty(settings);
+        apply_fetch(
+            &mut app,
+            Path::new("/nonexistent/cache.json"),
+            Err(anyhow::anyhow!("server answered HTTP 401: bad secret-key")),
+        );
+        let (text, _) = app.status(0);
+        assert!(text.contains("could not load the schema"), "{text}");
+        assert!(!text.contains("secret-key"), "{text}");
     }
 }
