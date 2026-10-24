@@ -22,7 +22,7 @@ The message gives clear, full-path indications of everything needed to run vega:
 
 - the three ways to provide the endpoint (`--uri`, `VEGA_GRAPHQL_URI`, `uri` in the config file), in precedence order;
 - the full resolved path of `config.toml` (from `$XDG_CONFIG_HOME/vega`, with the fallback actually in use), and whether the file exists;
-- that the API key, when the server needs one, is read only from `VEGA_GRAPHQL_KEY` (never its value).
+- that credentials, when the server needs them, are read only from `VEGA_GRAPHQL_KEY` and `VEGA_GRAPHQL_HEADERS` (never their values).
 
 ## Acceptance criteria
 
@@ -30,3 +30,7 @@ The message gives clear, full-path indications of everything needed to run vega:
 - The error goes to stderr and the exit code is unchanged; stdout stays empty.
 - The message never includes the API key value.
 - Update the README and help text if they describe configuration.
+
+## Update after 0004
+
+Plain `vega` no longer fails when nothing is configured: it opens the connection modal. The error described above is now printed only by the one-shot commands (`--search`, `--describe`, `--query`, `--run`), where there is no UI to fall back to. Their message is unchanged, so this issue remains open for them; the expected behavior and the acceptance criteria apply to those commands.
