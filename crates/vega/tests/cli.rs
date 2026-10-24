@@ -40,6 +40,8 @@ fn vega_with(cache: &TempDir, uri: &str, key: Option<&str>, args: &[&str]) -> Ou
         .env("XDG_CACHE_HOME", cache.path())
         .env("XDG_CONFIG_HOME", cache.path().join("config"))
         .env("VEGA_GRAPHQL_URI", uri)
+        .env_remove("VEGA_GRAPHQL_HEADERS")
+        .env_remove("VEGA_GRAPHQL_KEY_HEADER")
         .stdin(Stdio::null());
     match key {
         Some(key) => command.env("VEGA_GRAPHQL_KEY", key),
@@ -47,6 +49,35 @@ fn vega_with(cache: &TempDir, uri: &str, key: Option<&str>, args: &[&str]) -> Ou
     };
     command.output().unwrap()
 }
+
+/// Like `vega_with`, with any environment variables (the three credential ones are
+/// removed first).
+fn vega_env(cache: &TempDir, uri: &str, envs: &[(&str, &str)], args: &[&str]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_vega"));
+    command
+        .args(args)
+        .env("XDG_CACHE_HOME", cache.path())
+        .env("XDG_CONFIG_HOME", cache.path().join("config"))
+        .env("VEGA_GRAPHQL_URI", uri)
+        .env_remove("VEGA_GRAPHQL_KEY")
+        .env_remove("VEGA_GRAPHQL_KEY_HEADER")
+        .env_remove("VEGA_GRAPHQL_HEADERS")
+        .stdin(Stdio::null());
+    for (name, value) in envs {
+        command.env(name, value);
+    }
+    command.output().unwrap()
+}
+
+const RUN_ARGS: [&str; 7] = [
+    "--query",
+    "Query.userRead",
+    "--select",
+    "id",
+    "--var",
+    "id=1",
+    "--run",
+];
 
 /// Serves exactly one request on a random local port; returns the endpoint URL and a
 /// channel that yields the raw request text.
@@ -678,4 +709,136 @@ fn query_without_run_still_sends_nothing() {
         ],
     );
     assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn headers_variable_sends_every_header_and_hides_the_values() {
+    let (uri, rx) = serve_once(
+        "200 OK",
+        r#"{"data":{"userRead":{"id":"echo tok-123 team-9"}}}"#,
+    );
+    let cache = seeded_cache_for(&uri, 60);
+    let out = vega_env(
+        &cache,
+        &uri,
+        &[(
+            "VEGA_GRAPHQL_HEADERS",
+            "Authorization: Bearer tok-123\nX-Tenant: team-9",
+        )],
+        &RUN_ARGS,
+    );
+    let request = rx.recv().unwrap().to_lowercase();
+    assert!(
+        request.contains("authorization: bearer tok-123"),
+        "{request}"
+    );
+    assert!(request.contains("x-tenant: team-9"), "{request}");
+    for text in [stdout(&out), stderr(&out)] {
+        assert!(!text.contains("tok-123"), "{text}");
+        assert!(!text.contains("team-9"), "{text}");
+    }
+}
+
+#[test]
+fn key_header_flag_renames_the_key_header() {
+    let (uri, rx) = serve_once("200 OK", r#"{"data":{"userRead":null}}"#);
+    let cache = seeded_cache_for(&uri, 60);
+    let mut args = vec!["--key-header", "X-Token"];
+    args.extend(RUN_ARGS);
+    vega_env(&cache, &uri, &[("VEGA_GRAPHQL_KEY", "k-1")], &args);
+    let request = rx.recv().unwrap().to_lowercase();
+    assert!(request.contains("x-token: k-1"), "{request}");
+    assert!(!request.contains("x-api-key"), "{request}");
+}
+
+#[test]
+fn key_header_variable_is_read_and_the_flag_beats_it() {
+    let (uri, rx) = serve_once("200 OK", r#"{"data":{"userRead":null}}"#);
+    let cache = seeded_cache_for(&uri, 60);
+    vega_env(
+        &cache,
+        &uri,
+        &[
+            ("VEGA_GRAPHQL_KEY", "k-1"),
+            ("VEGA_GRAPHQL_KEY_HEADER", "X-From-Env"),
+        ],
+        &RUN_ARGS,
+    );
+    assert!(rx
+        .recv()
+        .unwrap()
+        .to_lowercase()
+        .contains("x-from-env: k-1"));
+
+    let (uri, rx) = serve_once("200 OK", r#"{"data":{"userRead":null}}"#);
+    let cache = seeded_cache_for(&uri, 60);
+    let mut args = vec!["--key-header", "X-From-Flag"];
+    args.extend(RUN_ARGS);
+    vega_env(
+        &cache,
+        &uri,
+        &[
+            ("VEGA_GRAPHQL_KEY", "k-1"),
+            ("VEGA_GRAPHQL_KEY_HEADER", "X-From-Env"),
+        ],
+        &args,
+    );
+    let request = rx.recv().unwrap().to_lowercase();
+    assert!(request.contains("x-from-flag: k-1"), "{request}");
+    assert!(!request.contains("x-from-env"), "{request}");
+}
+
+#[test]
+fn an_explicit_header_overrides_the_key_on_the_same_name() {
+    let (uri, rx) = serve_once("200 OK", r#"{"data":{"userRead":null}}"#);
+    let cache = seeded_cache_for(&uri, 60);
+    vega_env(
+        &cache,
+        &uri,
+        &[
+            ("VEGA_GRAPHQL_KEY", "from-key"),
+            ("VEGA_GRAPHQL_HEADERS", "x-api-key: from-headers"),
+        ],
+        &RUN_ARGS,
+    );
+    let request = rx.recv().unwrap().to_lowercase();
+    assert!(request.contains("x-api-key: from-headers"), "{request}");
+    assert!(!request.contains("from-key"), "{request}");
+}
+
+#[test]
+fn a_malformed_headers_variable_fails_without_printing_the_value() {
+    let cache = seeded_cache(60);
+    let out = vega_env(
+        &cache,
+        URI,
+        &[("VEGA_GRAPHQL_HEADERS", "Authorization Bearer tok-123")],
+        &["--search", "x"],
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("VEGA_GRAPHQL_HEADERS line 1"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains("tok-123"), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+}
+
+#[test]
+fn help_mentions_the_header_variables() {
+    let cache = seeded_cache(60);
+    let out = vega_env(&cache, URI, &[], &["--help"]);
+    let help = stdout(&out);
+    assert!(help.contains("VEGA_GRAPHQL_KEY"), "{help}");
+    assert!(help.contains("VEGA_GRAPHQL_HEADERS"), "{help}");
+    assert!(help.contains("--key-header"), "{help}");
+}
+
+#[test]
+fn the_key_alone_still_goes_in_the_x_api_key_header() {
+    let (uri, rx) = serve_once("200 OK", r#"{"data":{"userRead":null}}"#);
+    let cache = seeded_cache_for(&uri, 60);
+    vega_env(&cache, &uri, &[("VEGA_GRAPHQL_KEY", "k-1")], &RUN_ARGS);
+    assert!(rx.recv().unwrap().to_lowercase().contains("x-api-key: k-1"));
 }

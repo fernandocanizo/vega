@@ -8,7 +8,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::headers::{Header, DEFAULT_KEY_HEADER};
+use crate::headers::{self, Header, HeaderError, DEFAULT_KEY_HEADER};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct FileConfig {
@@ -20,6 +20,10 @@ pub struct FileConfig {
 pub struct AuthInput {
     /// `VEGA_GRAPHQL_KEY`.
     pub key: Option<String>,
+    /// `--key-header`, else `VEGA_GRAPHQL_KEY_HEADER`.
+    pub key_header: Option<String>,
+    /// `VEGA_GRAPHQL_HEADERS`: one `Name: value` per line.
+    pub headers: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +41,8 @@ pub enum ConfigError {
     MissingUri,
     #[error("the key header name is not valid: fix --key-header or VEGA_GRAPHQL_KEY_HEADER")]
     InvalidKeyHeader,
+    #[error(transparent)]
+    Headers(#[from] HeaderError),
     #[error("cannot read {path}: {source}")]
     Io {
         path: PathBuf,
@@ -67,9 +73,12 @@ pub fn resolve_settings(
         .ok_or(ConfigError::MissingUri)?;
     let mut headers = Vec::new();
     if let Some(key) = non_empty(auth.key) {
-        let header =
-            Header::new(DEFAULT_KEY_HEADER, key).map_err(|_| ConfigError::InvalidKeyHeader)?;
+        let name = non_empty(auth.key_header).unwrap_or_else(|| DEFAULT_KEY_HEADER.to_string());
+        let header = Header::new(name, key).map_err(|_| ConfigError::InvalidKeyHeader)?;
         headers.push(header);
+    }
+    if let Some(text) = auth.headers {
+        headers = headers::merge(headers, headers::parse_lines(&text)?);
     }
     Ok(Settings { uri, headers })
 }
@@ -111,7 +120,103 @@ mod tests {
     }
 
     fn key(v: &str) -> AuthInput {
-        AuthInput { key: s(v) }
+        AuthInput {
+            key: s(v),
+            ..AuthInput::default()
+        }
+    }
+
+    fn auth(key: Option<&str>, key_header: Option<&str>, headers: Option<&str>) -> AuthInput {
+        AuthInput {
+            key: key.map(str::to_string),
+            key_header: key_header.map(str::to_string),
+            headers: headers.map(str::to_string),
+        }
+    }
+
+    fn header(name: &str, value: &str) -> Header {
+        Header::new(name, value).unwrap()
+    }
+
+    #[test]
+    fn the_key_header_name_can_be_changed() {
+        let settings = resolve_settings(
+            s("u"),
+            None,
+            auth(Some("k"), Some("X-Token"), None),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(settings.headers, vec![header("X-Token", "k")]);
+    }
+
+    #[test]
+    fn an_empty_key_header_name_falls_back_to_the_default() {
+        let settings = resolve_settings(
+            s("u"),
+            None,
+            auth(Some("k"), Some(""), None),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(settings.headers, vec![header("X-API-Key", "k")]);
+    }
+
+    #[test]
+    fn an_invalid_key_header_name_is_an_error_that_hides_the_key() {
+        let err = resolve_settings(
+            s("u"),
+            None,
+            auth(Some("super-secret"), Some("Bad Name"), None),
+            FileConfig::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidKeyHeader));
+        assert!(!err.to_string().contains("super-secret"));
+    }
+
+    #[test]
+    fn headers_from_the_environment_follow_the_key_and_win_on_the_same_name() {
+        let settings = resolve_settings(
+            s("u"),
+            None,
+            auth(Some("k"), None, Some("x-api-key: other\nX-Tenant: t")),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings.headers,
+            vec![header("x-api-key", "other"), header("X-Tenant", "t")]
+        );
+    }
+
+    #[test]
+    fn headers_work_without_a_key() {
+        let settings = resolve_settings(
+            s("u"),
+            None,
+            auth(None, None, Some("Authorization: Bearer abc")),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings.headers,
+            vec![header("Authorization", "Bearer abc")]
+        );
+    }
+
+    #[test]
+    fn a_malformed_headers_variable_is_an_error_without_the_value() {
+        let err = resolve_settings(
+            s("u"),
+            None,
+            auth(None, None, Some("Authorization Bearer tok-123")),
+            FileConfig::default(),
+        )
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("VEGA_GRAPHQL_HEADERS line 1"), "{message}");
+        assert!(!message.contains("tok-123"), "{message}");
     }
 
     #[test]

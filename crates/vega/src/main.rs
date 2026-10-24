@@ -35,6 +35,11 @@ fn main() -> anyhow::Result<()> {
         env_uri,
         AuthInput {
             key: env_var("VEGA_GRAPHQL_KEY"),
+            key_header: cli
+                .key_header
+                .clone()
+                .or_else(|| env_var("VEGA_GRAPHQL_KEY_HEADER")),
+            headers: env_var("VEGA_GRAPHQL_HEADERS"),
         },
         file_config,
     )?;
