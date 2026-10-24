@@ -1,6 +1,6 @@
 # Add an "About the name" section to the README
 
-Status: open (not scheduled)
+Status: done
 
 ## Problem
 
