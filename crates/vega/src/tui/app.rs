@@ -73,9 +73,13 @@ pub enum StatusLevel {
     Notice,
 }
 
+/// Rows a page key moves through in the Results list.
+const PAGE: usize = 10;
+
 /// Hotkeys in Browse mode as (keys, description); shown by the help modal.
 pub const BROWSE_KEYS: &[(&str, &str)] = &[
     ("↑ / ↓", "Move through the results"),
+    ("PgUp / PgDn", "Move ten results"),
     ("Enter / →", "Open the highlighted item as a tree"),
     ("Ctrl-R", "Refresh the schema"),
     ("Ctrl-K", "Open the connection (endpoint and credentials)"),
@@ -543,6 +547,10 @@ impl App {
                 self.hit_index = (self.hit_index + 1).min(self.hits.len().saturating_sub(1));
             }
             KeyCode::Up => self.hit_index = self.hit_index.saturating_sub(1),
+            KeyCode::PageDown => {
+                self.hit_index = (self.hit_index + PAGE).min(self.hits.len().saturating_sub(1));
+            }
+            KeyCode::PageUp => self.hit_index = self.hit_index.saturating_sub(PAGE),
             KeyCode::Enter | KeyCode::Right => self.start_design(),
             _ => {}
         }
@@ -1038,6 +1046,28 @@ mod tests {
         press(app, KeyCode::Tab); // the token field
         type_text(app, token);
         press(app, KeyCode::Enter)
+    }
+
+    #[test]
+    fn page_keys_move_ten_results_and_stop_at_the_ends() {
+        let mut app = app();
+        app.hits = (0..25)
+            .map(|n| vega_core::search::Hit {
+                kind: vega_core::search::HitKind::Query,
+                path: format!("f{n}"),
+                summary: String::new(),
+            })
+            .collect();
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.hit_index, 10);
+        press(&mut app, KeyCode::PageDown);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.hit_index, 24);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.hit_index, 14);
+        press(&mut app, KeyCode::PageUp);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.hit_index, 0);
     }
 
     #[test]
