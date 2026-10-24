@@ -1,5 +1,5 @@
 //! Connection settings: CLI flag, then environment, then `config.toml`.
-//! The API key is read from the environment only and is never persisted.
+//! Header values are read from the environment only and are never persisted.
 
 use std::{
     fs, io,
@@ -8,24 +8,25 @@ use std::{
 
 use serde::Deserialize;
 
+use crate::headers::{Header, DEFAULT_KEY_HEADER};
+
 #[derive(Debug, Default, Deserialize)]
 pub struct FileConfig {
     pub uri: Option<String>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct Settings {
-    pub uri: String,
-    pub api_key: Option<String>,
+/// Credentials as read from the environment and flags. It has no `Debug` on purpose.
+#[derive(Default)]
+pub struct AuthInput {
+    /// `VEGA_GRAPHQL_KEY`.
+    pub key: Option<String>,
 }
 
-impl std::fmt::Debug for Settings {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Settings")
-            .field("uri", &self.uri)
-            .field("api_key", &self.api_key.as_ref().map(|_| "***"))
-            .finish()
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settings {
+    pub uri: String,
+    /// Sent with every request. Values are secrets (`Header`'s `Debug` hides them).
+    pub headers: Vec<Header>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +35,8 @@ pub enum ConfigError {
         "no GraphQL endpoint configured: pass --uri, set VEGA_GRAPHQL_URI, or add `uri` to config.toml"
     )]
     MissingUri,
+    #[error("the key header name is not valid: fix --key-header or VEGA_GRAPHQL_KEY_HEADER")]
+    InvalidKeyHeader,
     #[error("cannot read {path}: {source}")]
     Io {
         path: PathBuf,
@@ -55,17 +58,20 @@ fn non_empty(value: Option<String>) -> Option<String> {
 pub fn resolve_settings(
     flag_uri: Option<String>,
     env_uri: Option<String>,
-    env_key: Option<String>,
+    auth: AuthInput,
     file: FileConfig,
 ) -> Result<Settings, ConfigError> {
     let uri = non_empty(flag_uri)
         .or_else(|| non_empty(env_uri))
         .or_else(|| non_empty(file.uri))
         .ok_or(ConfigError::MissingUri)?;
-    Ok(Settings {
-        uri,
-        api_key: non_empty(env_key),
-    })
+    let mut headers = Vec::new();
+    if let Some(key) = non_empty(auth.key) {
+        let header =
+            Header::new(DEFAULT_KEY_HEADER, key).map_err(|_| ConfigError::InvalidKeyHeader)?;
+        headers.push(header);
+    }
+    Ok(Settings { uri, headers })
 }
 
 /// Reads `<config_dir>/config.toml`; a missing file is not an error.
@@ -84,14 +90,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn debug_output_hides_the_api_key() {
+    fn debug_output_hides_the_header_values() {
         let settings = Settings {
             uri: "https://x.example.com/graphql".into(),
-            api_key: Some("super-secret".into()),
+            headers: vec![Header::new("X-API-Key", "super-secret").unwrap()],
         };
         let text = format!("{settings:?}");
         assert!(!text.contains("super-secret"), "{text}");
-        assert!(text.contains("Some(\"***\")"), "{text}");
+        assert!(text.contains("***"), "{text}");
     }
 
     fn file(uri: &str) -> FileConfig {
@@ -104,26 +110,33 @@ mod tests {
         Some(v.to_string())
     }
 
+    fn key(v: &str) -> AuthInput {
+        AuthInput { key: s(v) }
+    }
+
     #[test]
     fn flag_beats_env_beats_file() {
-        let all = resolve_settings(s("flag"), s("env"), None, file("file")).unwrap();
+        let all =
+            resolve_settings(s("flag"), s("env"), AuthInput::default(), file("file")).unwrap();
         assert_eq!(all.uri, "flag");
-        let env_file = resolve_settings(None, s("env"), None, file("file")).unwrap();
+        let env_file =
+            resolve_settings(None, s("env"), AuthInput::default(), file("file")).unwrap();
         assert_eq!(env_file.uri, "env");
-        let only_file = resolve_settings(None, None, None, file("file")).unwrap();
+        let only_file = resolve_settings(None, None, AuthInput::default(), file("file")).unwrap();
         assert_eq!(only_file.uri, "file");
     }
 
     #[test]
     fn empty_values_count_as_unset() {
-        let settings = resolve_settings(s(""), s("env"), s(""), FileConfig::default()).unwrap();
+        let settings = resolve_settings(s(""), s("env"), key(""), FileConfig::default()).unwrap();
         assert_eq!(settings.uri, "env");
-        assert_eq!(settings.api_key, None);
+        assert!(settings.headers.is_empty());
     }
 
     #[test]
     fn missing_uri_is_an_error_naming_the_ways_to_set_it() {
-        let err = resolve_settings(None, None, None, FileConfig::default()).unwrap_err();
+        let err =
+            resolve_settings(None, None, AuthInput::default(), FileConfig::default()).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("--uri"));
         assert!(message.contains("VEGA_GRAPHQL_URI"));
@@ -131,9 +144,13 @@ mod tests {
     }
 
     #[test]
-    fn api_key_comes_from_the_environment_value() {
-        let settings = resolve_settings(s("u"), None, s("secret"), FileConfig::default()).unwrap();
-        assert_eq!(settings.api_key.as_deref(), Some("secret"));
+    fn the_key_becomes_the_default_header() {
+        let settings =
+            resolve_settings(s("u"), None, key("secret"), FileConfig::default()).unwrap();
+        assert_eq!(
+            settings.headers,
+            vec![Header::new("X-API-Key", "secret").unwrap()]
+        );
     }
 
     #[test]

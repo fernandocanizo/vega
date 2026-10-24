@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 
+use crate::headers::{self, Header};
 use crate::schema::IntrospectionResponse;
 
 /// Standard introspection query. It leaves out `interfaces`, `isRepeatable` and
@@ -87,7 +88,7 @@ pub fn parse_response(body: &str) -> Result<IntrospectionResponse, ClientError> 
 pub struct Response {
     pub status: u16,
     pub elapsed: Duration,
-    /// The body as received, with the API key (if the server echoed it) masked.
+    /// The body as received, with every header value (if the server echoed one) masked.
     pub body: String,
 }
 
@@ -96,27 +97,19 @@ pub fn operation_body(operation_name: &str, query: &str, variables: &Map<String,
     json!({ "query": query, "variables": variables, "operationName": operation_name })
 }
 
-/// Replaces every occurrence of the API key with `***`.
-fn mask_key(text: String, api_key: Option<&str>) -> String {
-    match api_key.filter(|key| !key.is_empty()) {
-        Some(key) => text.replace(key, "***"),
-        None => text,
-    }
-}
-
-/// POSTs `body` as JSON and returns the HTTP status, the response text and how long the
-/// round trip took.
+/// POSTs `body` as JSON with `headers` and returns the HTTP status, the response text
+/// and how long the round trip took.
 fn post(
     uri: &str,
-    api_key: Option<&str>,
+    headers: &[Header],
     body: &Value,
 ) -> Result<(u16, String, Duration), reqwest::Error> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()?;
     let mut request = client.post(uri).json(body);
-    if let Some(key) = api_key {
-        request = request.header("X-API-Key", key);
+    for header in headers {
+        request = request.header(header.name(), header.value());
     }
     let started = Instant::now();
     let response = request.send()?;
@@ -127,25 +120,25 @@ fn post(
 
 /// Runs an operation. Any HTTP status is an `Ok` response; connection failures, timeouts
 /// and unreadable bodies are errors.
-pub fn execute(uri: &str, api_key: Option<&str>, body: &Value) -> Result<Response, ClientError> {
-    let (status, text, elapsed) = post(uri, api_key, body)?;
+pub fn execute(uri: &str, headers: &[Header], body: &Value) -> Result<Response, ClientError> {
+    let (status, text, elapsed) = post(uri, headers, body)?;
     Ok(Response {
         status,
         elapsed,
-        body: mask_key(text, api_key),
+        body: headers::mask(&text, headers),
     })
 }
 
 pub fn fetch_introspection(
     uri: &str,
-    api_key: Option<&str>,
+    headers: &[Header],
 ) -> Result<IntrospectionResponse, ClientError> {
-    let (status, text, _elapsed) = post(uri, api_key, &request_body())?;
+    let (status, text, _elapsed) = post(uri, headers, &request_body())?;
     if !(200..300).contains(&status) {
         let body: String = text.chars().take(300).collect();
         return Err(ClientError::Status {
             status,
-            body: mask_key(body, api_key),
+            body: headers::mask(&body, headers),
         });
     }
     parse_response(&text)

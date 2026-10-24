@@ -27,7 +27,7 @@ pub fn load_or_fetch(
 }
 
 pub fn fetch_entry(settings: &Settings) -> anyhow::Result<CacheEntry> {
-    let response = client::fetch_introspection(&settings.uri, settings.api_key.as_deref())
+    let response = client::fetch_introspection(&settings.uri, &settings.headers)
         .with_context(|| format!("fetching the schema from {}", settings.uri))?;
     Ok(CacheEntry {
         endpoint: settings.uri.clone(),

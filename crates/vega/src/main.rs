@@ -5,7 +5,7 @@ mod tui;
 
 use anyhow::Context;
 use clap::Parser;
-use vega_core::config::{self, FileConfig, Settings};
+use vega_core::config::{self, AuthInput, FileConfig, Settings};
 use vega_core::querygen::GeneratedQuery;
 use vega_core::schema::{Root, Schema};
 use vega_core::selection::{self, OperationRef, Selection};
@@ -33,7 +33,9 @@ fn main() -> anyhow::Result<()> {
     let settings = config::resolve_settings(
         cli.uri.clone(),
         env_uri,
-        env_var("VEGA_GRAPHQL_KEY"),
+        AuthInput {
+            key: env_var("VEGA_GRAPHQL_KEY"),
+        },
         file_config,
     )?;
 
@@ -146,7 +148,7 @@ fn run_query(
         confirm_mutation(&query.operation_name)?;
     }
     let body = client::operation_body(&query.operation_name, &query.text, &variables);
-    let response = client::execute(&settings.uri, settings.api_key.as_deref(), &body)
+    let response = client::execute(&settings.uri, &settings.headers, &body)
         .with_context(|| format!("running {} on {}", query.operation_name, settings.uri))?;
     if args.json {
         println!(
