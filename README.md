@@ -112,9 +112,9 @@ vega --refresh                    # refetch the schema instead of using the cach
 
 The first run fetches the schema; later runs use the cache. The cache age is shown in the status bar of the interactive browser (red after 24 hours) and as a warning on stderr for the command line flags. Press `?` or `F1` inside the browser to see all the keys.
 
-### Try it without a server of your own
+### Try it with a public server!
 
-Vega needs no configuration to start, so you can point it at a public GraphQL API. Two that work without credentials:
+Vega needs no configuration to start, so you can point it at a public GraphQL API. Here's a couple that work without credentials:
 
 ```sh
 # Countries: small and easy to browse
