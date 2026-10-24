@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::tui::app::{App, Edit, Focus, RunState, StatusLevel, VariableRow};
+use crate::tui::connection::{AuthType, Field, Focus as ModalFocus, Modal};
 use vega_core::response::LineKind;
 use vega_core::selection::{NodeKind, Row};
 use vega_core::variables::{self, State};
@@ -61,6 +62,9 @@ pub fn draw(frame: &mut Frame, app: &App, now: u64) {
     }
     if app.help_open {
         draw_help(frame, area, app);
+    }
+    if let Some(modal) = &app.modal {
+        draw_connection(frame, area, modal);
     }
 }
 
@@ -116,6 +120,119 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
         inner.height,
     );
     frame.render_widget(Paragraph::new(Text::from(lines)), padded);
+}
+
+fn draw_connection(frame: &mut Frame, area: Rect, modal: &Modal) {
+    let width = area.width.min(76);
+    let height = area.height.min(20);
+    let popup = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = Block::default().borders(Borders::ALL).title("Connection");
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+
+    let uri_focused = modal.focus() == ModalFocus::Uri;
+    frame.render_widget(
+        Paragraph::new(field_text(modal.uri(), uri_focused)).block(pane("URI", uri_focused)),
+        rows[0],
+    );
+
+    let columns = Layout::horizontal([Constraint::Length(18), Constraint::Min(1)]).split(rows[1]);
+    draw_types(frame, columns[0], modal);
+    draw_form(frame, columns[1], modal);
+
+    let footer = match modal.error() {
+        Some(message) => Line::styled(message.to_string(), Style::default().fg(Color::Red)),
+        None => Line::raw(""),
+    };
+    let hint = Line::styled(
+        "Tab next · Enter connect · Esc cancel · Ctrl-T reveal · Ctrl-N add row",
+        Style::default().fg(Color::DarkGray),
+    );
+    frame.render_widget(Paragraph::new(vec![footer, hint]), rows[2]);
+}
+
+fn draw_types(frame: &mut Frame, area: Rect, modal: &Modal) {
+    let focused = modal.focus() == ModalFocus::Types;
+    let items: Vec<ListItem> = AuthType::ALL
+        .iter()
+        .map(|auth| {
+            let mark = if *auth == modal.selected() {
+                "●"
+            } else {
+                "○"
+            };
+            ListItem::new(format!("{mark} {}", auth.label()))
+        })
+        .collect();
+    let mut state = ListState::default();
+    if focused {
+        state.select(
+            AuthType::ALL
+                .iter()
+                .position(|auth| *auth == modal.selected()),
+        );
+    }
+    let list = List::new(items)
+        .block(pane("Type", focused))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+fn draw_form(frame: &mut Frame, area: Rect, modal: &Modal) {
+    let title = modal.selected().label();
+    let fields = modal.fields();
+    let block = pane(title, matches!(modal.focus(), ModalFocus::Field(_)));
+    if fields.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No credentials are sent.").block(block),
+            area,
+        );
+        return;
+    }
+    let mut lines = Vec::new();
+    let mut focus_line = 0;
+    for (index, field) in fields.iter().enumerate() {
+        let focused = modal.focus() == ModalFocus::Field(index);
+        if focused {
+            focus_line = lines.len();
+        }
+        lines.push(Line::styled(
+            field.label().to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        lines.push(field_text(field, focused));
+        // A blank line between the rows of Custom headers.
+        if modal.selected() == AuthType::CustomHeaders && index % 2 == 1 {
+            lines.push(Line::raw(""));
+        }
+    }
+    let visible = usize::from(area.height.saturating_sub(2));
+    let skip = (focus_line + 2).saturating_sub(visible);
+    let scroll = u16::try_from(skip).unwrap_or(0);
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
+}
+
+/// A field's text, with a cursor mark when it has focus.
+fn field_text(field: &Field, focused: bool) -> Line<'static> {
+    let mut text = field.display();
+    if focused {
+        text.push('▏');
+        return Line::styled(text, Style::default().add_modifier(Modifier::REVERSED));
+    }
+    Line::raw(text)
 }
 
 fn draw_status(frame: &mut Frame, area: Rect, app: &App, now: u64) {
@@ -370,9 +487,11 @@ fn tree_item(app: &App, row: &Row) -> ListItem<'static> {
 mod tests {
     use super::*;
     use crate::tui::app::App;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, style::Color, Terminal};
     use std::time::Duration;
     use vega_core::client::Response;
+    use vega_core::config::Settings;
     use vega_core::response;
     use vega_core::schema::IntrospectionResponse;
 
@@ -401,6 +520,101 @@ mod tests {
             "https://nexus.example.com/graphql",
             1_000,
         )
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn ctrl(app: &mut App, c: char) {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+    }
+
+    fn empty_settings() -> Settings {
+        Settings {
+            uri: String::new(),
+            headers: Vec::new(),
+            key_only: false,
+        }
+    }
+
+    #[test]
+    fn the_modal_shows_the_uri_the_types_and_the_hint() {
+        let app = App::empty(empty_settings());
+        let text = screen(&render(&app, 0));
+        assert!(text.contains("Connection"));
+        assert!(text.contains("URI"));
+        for label in ["None", "Basic", "API Key", "Bearer", "Custom headers"] {
+            assert!(text.contains(label), "missing {label}");
+        }
+        assert!(text.contains("Ctrl-T"));
+        assert!(text.contains("Esc"));
+    }
+
+    #[test]
+    fn the_modal_is_hidden_when_closed() {
+        assert!(!screen(&render(&app(), 1_000)).contains("Connection"));
+    }
+
+    #[test]
+    fn secrets_are_masked_until_revealed() {
+        let mut app = App::empty(Settings {
+            uri: "https://x.example.com/graphql".into(),
+            ..empty_settings()
+        });
+        ctrl(&mut app, 'k');
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Down); // Basic, API Key, Bearer
+        }
+        key(&mut app, KeyCode::Tab);
+        for c in "tok-123".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        let text = screen(&render(&app, 0));
+        assert!(!text.contains("tok-123"), "secret drawn in clear");
+        assert!(text.contains("•••••••"));
+        ctrl(&mut app, 't');
+        assert!(screen(&render(&app, 0)).contains("tok-123"));
+    }
+
+    #[test]
+    fn the_modal_shows_validation_errors() {
+        let mut app = App::empty(empty_settings());
+        key(&mut app, KeyCode::Enter);
+        assert!(screen(&render(&app, 0)).contains("The URI is required"));
+    }
+
+    #[test]
+    fn custom_headers_show_every_row() {
+        let mut app = App::empty(Settings {
+            uri: "https://x.example.com/graphql".into(),
+            ..empty_settings()
+        });
+        ctrl(&mut app, 'k');
+        for _ in 0..4 {
+            key(&mut app, KeyCode::Down);
+        }
+        key(&mut app, KeyCode::Tab);
+        for c in "X-One".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        ctrl(&mut app, 'n');
+        for c in "X-Two".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        let text = screen(&render(&app, 0));
+        assert!(text.contains("X-One"));
+        assert!(text.contains("X-Two"));
+    }
+
+    #[test]
+    fn the_modal_does_not_panic_on_tiny_terminals() {
+        let mut app = App::empty(empty_settings());
+        ctrl(&mut app, 'k');
+        for (w, h) in [(20, 5), (1, 1), (0, 0), (3, 40), (200, 3)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|frame| draw(frame, &app, 0)).unwrap();
+        }
     }
 
     #[test]

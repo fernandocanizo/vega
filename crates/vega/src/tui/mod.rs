@@ -2,7 +2,6 @@
 //! and `ui`.
 
 pub mod app;
-#[allow(dead_code)] // the drawing code in `ui` uses the rest in a later commit
 pub mod connection;
 pub mod ui;
 
