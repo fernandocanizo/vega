@@ -635,4 +635,21 @@ mod tests {
             assert!(!looks_like_query(text), "{text}");
         }
     }
+
+    #[test]
+    fn what_a_copy_puts_on_the_clipboard_imports_back_to_the_same_design() {
+        let schema = design_schema();
+        let op = OperationRef::parse(&schema, "Query.me").unwrap();
+        let selection = parse_select(&schema, &op, "id,posts.title,friends.name").unwrap();
+        let query = generate(&schema, &op, &selection).unwrap();
+        let path = query.variables[0].path.clone();
+        let values: Values = [(path.clone(), "4".to_string())].into();
+        let copy = crate::export::request_json(&schema, &query, &values);
+
+        let found = import(&schema, &copy.text).unwrap();
+        assert_eq!(found.operation, op);
+        assert_eq!(found.selection, selection);
+        assert_eq!(found.values, values);
+        assert_eq!(found.discarded, 0);
+    }
 }
