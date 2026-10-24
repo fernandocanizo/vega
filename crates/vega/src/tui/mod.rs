@@ -139,6 +139,7 @@ mod tests {
             headers: key
                 .map(|key| vec![Header::new("X-API-Key", key).unwrap()])
                 .unwrap_or_default(),
+            key_only: false,
         }
     }
 

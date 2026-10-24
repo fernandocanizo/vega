@@ -28,9 +28,13 @@ pub struct AuthInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
+    /// The endpoint; empty when none is configured yet (only the TUI allows that).
     pub uri: String,
     /// Sent with every request. Values are secrets (`Header`'s `Debug` hides them).
     pub headers: Vec<Header>,
+    /// True when `headers` is exactly the single API key header, which the connection
+    /// modal shows on its API Key form.
+    pub key_only: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -61,7 +65,8 @@ fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|v| !v.is_empty())
 }
 
-pub fn resolve_settings(
+/// Like `resolve_settings`, but a missing endpoint is not an error: `uri` is empty.
+pub fn resolve_settings_partial(
     flag_uri: Option<String>,
     env_uri: Option<String>,
     auth: AuthInput,
@@ -70,17 +75,40 @@ pub fn resolve_settings(
     let uri = non_empty(flag_uri)
         .or_else(|| non_empty(env_uri))
         .or_else(|| non_empty(file.uri))
-        .ok_or(ConfigError::MissingUri)?;
+        .unwrap_or_default();
     let mut headers = Vec::new();
+    let mut key_only = false;
     if let Some(key) = non_empty(auth.key) {
         let name = non_empty(auth.key_header).unwrap_or_else(|| DEFAULT_KEY_HEADER.to_string());
         let header = Header::new(name, key).map_err(|_| ConfigError::InvalidKeyHeader)?;
         headers.push(header);
+        key_only = true;
     }
     if let Some(text) = auth.headers {
-        headers = headers::merge(headers, headers::parse_lines(&text)?);
+        let extra = headers::parse_lines(&text)?;
+        if !extra.is_empty() {
+            key_only = false;
+            headers = headers::merge(headers, extra);
+        }
     }
-    Ok(Settings { uri, headers })
+    Ok(Settings {
+        uri,
+        headers,
+        key_only,
+    })
+}
+
+pub fn resolve_settings(
+    flag_uri: Option<String>,
+    env_uri: Option<String>,
+    auth: AuthInput,
+    file: FileConfig,
+) -> Result<Settings, ConfigError> {
+    let settings = resolve_settings_partial(flag_uri, env_uri, auth, file)?;
+    if settings.uri.is_empty() {
+        return Err(ConfigError::MissingUri);
+    }
+    Ok(settings)
 }
 
 /// Reads `<config_dir>/config.toml`; a missing file is not an error.
@@ -103,6 +131,7 @@ mod tests {
         let settings = Settings {
             uri: "https://x.example.com/graphql".into(),
             headers: vec![Header::new("X-API-Key", "super-secret").unwrap()],
+            key_only: true,
         };
         let text = format!("{settings:?}");
         assert!(!text.contains("super-secret"), "{text}");
@@ -136,6 +165,79 @@ mod tests {
 
     fn header(name: &str, value: &str) -> Header {
         Header::new(name, value).unwrap()
+    }
+
+    #[test]
+    fn key_only_is_true_for_the_key_alone_and_false_otherwise() {
+        let key_only = resolve_settings(
+            s("u"),
+            None,
+            auth(Some("k"), None, None),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert!(key_only.key_only);
+
+        let with_headers = resolve_settings(
+            s("u"),
+            None,
+            auth(Some("k"), None, Some("X-Tenant: t")),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert!(!with_headers.key_only);
+
+        let headers_only = resolve_settings(
+            s("u"),
+            None,
+            auth(None, None, Some("X-Tenant: t")),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert!(!headers_only.key_only);
+
+        let nothing =
+            resolve_settings(s("u"), None, auth(None, None, None), FileConfig::default()).unwrap();
+        assert!(!nothing.key_only);
+        assert!(nothing.headers.is_empty());
+    }
+
+    #[test]
+    fn an_empty_headers_variable_keeps_the_key_only() {
+        let settings = resolve_settings(
+            s("u"),
+            None,
+            auth(Some("k"), None, Some("\n")),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert!(settings.key_only);
+    }
+
+    #[test]
+    fn partial_settings_allow_a_missing_uri_and_keep_the_headers() {
+        let settings = resolve_settings_partial(
+            None,
+            None,
+            auth(Some("k"), None, None),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(settings.uri, "");
+        assert_eq!(settings.headers, vec![header("X-API-Key", "k")]);
+        assert!(settings.key_only);
+    }
+
+    #[test]
+    fn partial_settings_still_reject_malformed_headers() {
+        let err = resolve_settings_partial(
+            None,
+            None,
+            auth(None, None, Some("no colon here")),
+            FileConfig::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::Headers(_)));
     }
 
     #[test]
