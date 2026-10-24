@@ -5,12 +5,15 @@ use std::collections::{BTreeSet, HashMap};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use vega_core::cache::{format_age, is_stale};
 use vega_core::client;
+use vega_core::config::Settings;
 use vega_core::querygen::{self, GenerateError, GeneratedQuery, VariableDef};
 use vega_core::response::ResponseView;
 use vega_core::schema::{Root, Schema};
 use vega_core::search::{self, Hit};
 use vega_core::selection::{self, Path, Row, Seg, Selection, TreeRoot};
 use vega_core::variables::{self, Editor, State, Values};
+
+use crate::tui::connection::{Modal, Outcome};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -19,6 +22,9 @@ pub enum Action {
     Refresh,
     /// The event loop should send this request on a background thread.
     Run(RunRequest),
+    /// The endpoint changed: the event loop should load the schema for it, from the
+    /// cache when there is one, otherwise from the server.
+    Load,
 }
 
 /// A request ready to be sent; `seq` ties the result to it.
@@ -72,6 +78,7 @@ pub const BROWSE_KEYS: &[(&str, &str)] = &[
     ("↑ / ↓", "Move through the results"),
     ("Enter / →", "Open the highlighted item as a tree"),
     ("Ctrl-R", "Refresh the schema"),
+    ("Ctrl-K", "Open the connection (endpoint and credentials)"),
     ("? / F1", "Show or hide this help"),
     ("Ctrl-Q", "Quit"),
 ];
@@ -88,6 +95,7 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("Esc", "Back to the results"),
     ("q / Ctrl-Q", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
+    ("Ctrl-K", "Open the connection (endpoint and credentials)"),
     ("h / ? / F1", "Show or hide this help"),
 ];
 
@@ -104,6 +112,7 @@ pub const RUN_KEYS: &[(&str, &str)] = &[
     ("Esc", "Back to Design"),
     ("q / Ctrl-Q", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
+    ("Ctrl-K", "Open the connection (endpoint and credentials)"),
     ("h / ? / F1", "Show or hide this help"),
 ];
 
@@ -175,6 +184,11 @@ impl DesignState {
 pub struct App {
     schema: Schema,
     host: String,
+    settings: Settings,
+    /// The connection modal, when it is open.
+    pub modal: Option<Modal>,
+    /// False until a schema has been loaded for the current endpoint.
+    loaded: bool,
     fetched_at: u64,
     pub query: String,
     pub hits: Vec<Hit>,
@@ -201,6 +215,15 @@ fn host_of(uri: &str) -> String {
         .to_string()
 }
 
+fn empty_schema() -> Schema {
+    Schema {
+        query_type: None,
+        mutation_type: None,
+        subscription_type: None,
+        types: Vec::new(),
+    }
+}
+
 /// Stores the text typed for a variable; empty text clears it.
 fn set_value(design: &mut DesignState, path: &Path, raw: &str) {
     if raw.is_empty() {
@@ -216,6 +239,13 @@ impl App {
         Self {
             schema,
             host: host_of(uri),
+            settings: Settings {
+                uri: uri.to_string(),
+                headers: Vec::new(),
+                key_only: false,
+            },
+            modal: None,
+            loaded: true,
             fetched_at,
             query: String::new(),
             hits,
@@ -232,15 +262,121 @@ impl App {
         }
     }
 
+    /// Replaces the connection settings (used once, at startup).
+    pub fn with_settings(mut self, settings: Settings) -> Self {
+        self.host = host_of(&settings.uri);
+        self.settings = settings;
+        self
+    }
+
+    /// An app with no schema yet. Without an endpoint it opens the connection modal.
+    pub fn empty(settings: Settings) -> Self {
+        let modal = settings.uri.is_empty().then(|| Modal::new(&settings));
+        let mut app = Self::new(empty_schema(), &settings.uri, 0).with_settings(settings);
+        app.loaded = false;
+        app.modal = modal;
+        app
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.loaded
+    }
+
+    /// A schema load was started: the status bar says so.
+    pub fn begin_load(&mut self) {
+        self.refresh = RefreshState::Running;
+    }
+
+    /// Text pasted into the terminal (bracketed paste). It goes to the modal when it is
+    /// open, otherwise only into the search box or a text variable editor, so pasted
+    /// text can never act as command keys.
+    pub fn handle_paste(&mut self, text: &str) {
+        if let Some(modal) = self.modal.as_mut() {
+            modal.paste(text);
+            return;
+        }
+        if self.help_open || self.confirm.is_some() {
+            return;
+        }
+        let in_text_editor = self
+            .design
+            .as_ref()
+            .is_some_and(|design| matches!(design.edit, Some(Edit::Text(_))));
+        if self.design.is_none() || in_text_editor {
+            for c in text.chars().filter(|c| !c.is_control()) {
+                self.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+        }
+    }
+
+    /// The modal returned new settings.
+    fn apply_connection(&mut self, settings: Settings) -> Action {
+        let uri_changed = settings.uri != self.settings.uri;
+        self.settings = settings;
+        if uri_changed {
+            self.reset_connection();
+            self.refresh = RefreshState::Running;
+            Action::Load
+        } else if !self.loaded {
+            self.refresh = RefreshState::Running;
+            Action::Refresh
+        } else {
+            Action::None
+        }
+    }
+
+    /// A new endpoint: nothing of the old schema (selection, query, variables) applies.
+    fn reset_connection(&mut self) {
+        self.schema = empty_schema();
+        self.loaded = false;
+        self.fetched_at = 0;
+        self.host = host_of(&self.settings.uri);
+        self.query.clear();
+        self.hits = search::search(&self.schema, "");
+        self.hit_index = 0;
+        self.design = None;
+        self.sessions.clear();
+        self.confirm = None;
+        self.help_open = false;
+        self.run_seq += 1;
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
         self.notice = None;
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if let Some(modal) = self.modal.as_mut() {
+            if ctrl && key.code == KeyCode::Char('q') {
+                self.should_quit = true;
+                return Action::None;
+            }
+            return match modal.handle_key(key) {
+                Outcome::Open => Action::None,
+                Outcome::Cancel => {
+                    self.modal = None;
+                    Action::None
+                }
+                Outcome::Submit(settings) => {
+                    self.modal = None;
+                    self.apply_connection(settings)
+                }
+            };
+        }
+        if ctrl {
             return match key.code {
                 KeyCode::Char('q') => {
                     self.should_quit = true;
                     Action::None
                 }
                 KeyCode::Char('r') => self.request_refresh(),
+                KeyCode::Char('k') => {
+                    self.help_open = false;
+                    self.modal = Some(Modal::new(&self.settings));
+                    Action::None
+                }
                 _ => Action::None,
             };
         }
@@ -368,6 +504,9 @@ impl App {
     }
 
     fn request_refresh(&mut self) -> Action {
+        if self.settings.uri.is_empty() {
+            return self.notify("no endpoint: press Ctrl-K to set one");
+        }
         if self.refresh == RefreshState::Running {
             return Action::None;
         }
@@ -740,6 +879,7 @@ impl App {
     }
 
     pub fn apply_refresh_ok(&mut self, schema: Schema, fetched_at: u64) {
+        self.loaded = true;
         self.schema = schema;
         self.fetched_at = fetched_at;
         self.design = None;
@@ -771,6 +911,9 @@ impl App {
         if let Some(notice) = &self.notice {
             return (notice.clone(), StatusLevel::Notice);
         }
+        if !self.loaded {
+            return self.status_without_schema();
+        }
         let age = now.saturating_sub(self.fetched_at);
         let level = if is_stale(age) {
             StatusLevel::Stale
@@ -779,20 +922,47 @@ impl App {
         };
         let mut text = format!("{} · schema fetched {} ago", self.host, format_age(age));
         match &self.refresh {
-            RefreshState::Idle => text.push_str(" · Ctrl-R refresh"),
+            RefreshState::Idle => text.push_str(" · Ctrl-R refresh · Ctrl-K connection"),
             RefreshState::Running => text.push_str(" · refreshing…"),
             RefreshState::CacheWriteFailed(message) => {
                 let first_line = message.lines().next().unwrap_or("");
                 text.push_str(&format!(
-                    " · schema updated but the cache could not be written: {first_line} · Ctrl-R refresh"
+                    " · schema updated but the cache could not be written: {first_line} · Ctrl-R refresh · Ctrl-K connection"
                 ));
             }
             RefreshState::Failed(message) => {
                 let first_line = message.lines().next().unwrap_or("");
-                text.push_str(&format!(" · refresh failed: {first_line} · Ctrl-R retry"));
+                text.push_str(&format!(
+                    " · refresh failed: {first_line} · Ctrl-R retry · Ctrl-K connection"
+                ));
             }
         }
         (text, level)
+    }
+
+    /// The status bar while no schema is loaded for the endpoint.
+    fn status_without_schema(&self) -> (String, StatusLevel) {
+        if self.settings.uri.is_empty() {
+            return (
+                "no endpoint · Ctrl-K connection".to_string(),
+                StatusLevel::Notice,
+            );
+        }
+        let text = match &self.refresh {
+            RefreshState::Running => format!("{} · loading the schema…", self.host),
+            RefreshState::Failed(message) => {
+                let first_line = message.lines().next().unwrap_or("");
+                format!(
+                    "{} · could not load the schema: {first_line} · Ctrl-K connection · Ctrl-R retry",
+                    self.host
+                )
+            }
+            _ => format!(
+                "{} · no schema loaded · Ctrl-K connection · Ctrl-R load",
+                self.host
+            ),
+        };
+        (text, StatusLevel::Notice)
     }
 }
 
@@ -802,6 +972,7 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::time::Duration;
     use vega_core::client::Response;
+    use vega_core::config::Settings;
     use vega_core::response;
     use vega_core::schema::IntrospectionResponse;
     use vega_core::selection::Seg;
@@ -829,6 +1000,185 @@ mod tests {
         for c in text.chars() {
             press(app, KeyCode::Char(c));
         }
+    }
+
+    fn settings(uri: &str) -> Settings {
+        Settings {
+            uri: uri.to_string(),
+            headers: Vec::new(),
+            key_only: false,
+        }
+    }
+
+    fn empty_app() -> App {
+        App::empty(settings(""))
+    }
+
+    /// Opens the modal, picks Bearer, types `token` and presses Enter.
+    fn submit_bearer(app: &mut App, token: &str) -> Action {
+        ctrl(app, 'k');
+        press(app, KeyCode::Down); // Basic
+        press(app, KeyCode::Down); // API Key
+        press(app, KeyCode::Down); // Bearer
+        press(app, KeyCode::Tab); // the token field
+        type_text(app, token);
+        press(app, KeyCode::Enter)
+    }
+
+    #[test]
+    fn an_app_without_an_endpoint_opens_the_modal_and_says_so() {
+        let app = empty_app();
+        assert!(app.modal.is_some());
+        assert!(!app.is_loaded());
+        assert_eq!(app.status(0).0, "no endpoint · Ctrl-K connection");
+        assert!(app.hits.is_empty());
+    }
+
+    #[test]
+    fn esc_closes_the_startup_modal_and_ctrl_r_points_to_ctrl_k() {
+        let mut app = empty_app();
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal.is_none());
+        assert_eq!(ctrl(&mut app, 'r'), Action::None);
+        assert!(app.status(0).0.contains("Ctrl-K"));
+        assert_eq!(app.refresh, RefreshState::Idle);
+    }
+
+    #[test]
+    fn ctrl_k_opens_the_modal_and_esc_cancels_without_changes() {
+        let mut app = app();
+        ctrl(&mut app, 'k');
+        assert!(app.modal.is_some());
+        type_text(&mut app, "zzz");
+        assert_eq!(app.query, "");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal.is_none());
+        assert_eq!(app.settings().uri, "https://nexus.example.com/graphql");
+    }
+
+    #[test]
+    fn ctrl_k_works_from_design_mode_and_closes_help() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::F(1));
+        ctrl(&mut app, 'k');
+        assert!(app.modal.is_some());
+        assert!(!app.help_open);
+        assert!(app.design.is_some());
+    }
+
+    #[test]
+    fn ctrl_q_quits_even_with_the_modal_open() {
+        let mut app = app();
+        ctrl(&mut app, 'k');
+        ctrl(&mut app, 'q');
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn submitting_only_new_headers_keeps_the_schema_and_the_work() {
+        let mut app = design_app();
+        open_me(&mut app);
+        assert_eq!(submit_bearer(&mut app, "tok-1"), Action::None);
+        assert!(app.modal.is_none());
+        assert!(app.design.is_some());
+        assert!(app.is_loaded());
+        assert_eq!(app.settings().headers.len(), 1);
+        assert_eq!(app.settings().headers[0].value(), "Bearer tok-1");
+    }
+
+    #[test]
+    fn submitting_headers_without_a_schema_retries_the_load() {
+        let mut app = App::empty(settings("https://x.example.com/graphql"));
+        app.apply_refresh_err("server answered HTTP 401".to_string());
+        assert!(app
+            .status(0)
+            .0
+            .contains("could not load the schema: server answered HTTP 401"));
+        assert_eq!(submit_bearer(&mut app, "tok-1"), Action::Refresh);
+        assert_eq!(app.refresh, RefreshState::Running);
+        assert!(app.status(0).0.contains("loading the schema"));
+    }
+
+    #[test]
+    fn changing_the_uri_starts_a_new_connection() {
+        let mut app = design_app();
+        open_me(&mut app);
+        ctrl(&mut app, 'k');
+        press(&mut app, KeyCode::BackTab); // from the type list to the URI
+        type_text(&mut app, "/v2");
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::Load);
+        assert_eq!(app.settings().uri, "https://example.com/graphql/v2");
+        assert!(app.design.is_none());
+        assert!(!app.is_loaded());
+        assert!(app.hits.is_empty());
+        assert_eq!(app.query, "");
+        assert!(app.status(0).0.contains("loading the schema"));
+    }
+
+    #[test]
+    fn a_loaded_schema_after_a_new_connection_makes_the_app_usable_again() {
+        let mut app = empty_app();
+        type_text(&mut app, "https://x/graphql");
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::Load);
+        let response: IntrospectionResponse = serde_json::from_str(FIXTURE).unwrap();
+        app.apply_refresh_ok(response.data.schema, 5_000);
+        assert!(app.is_loaded());
+        assert_eq!(app.hits.len(), 10);
+        assert!(app.status(5_000).0.contains("x"));
+    }
+
+    #[test]
+    fn paste_types_into_the_search_box() {
+        let mut app = app();
+        app.handle_paste("user\r\n");
+        assert_eq!(app.query, "user");
+    }
+
+    #[test]
+    fn paste_goes_to_the_modal_when_it_is_open() {
+        let mut app = app();
+        ctrl(&mut app, 'k');
+        press(&mut app, KeyCode::Down); // Basic
+        press(&mut app, KeyCode::Down); // API Key
+        press(&mut app, KeyCode::Down); // Bearer
+        press(&mut app, KeyCode::Tab);
+        app.handle_paste("tok-9\n");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings().headers[0].value(), "Bearer tok-9");
+        assert_eq!(app.query, "");
+    }
+
+    #[test]
+    fn paste_never_triggers_commands_in_design_mode() {
+        let mut app = design_app();
+        open_me(&mut app);
+        app.handle_paste("rq");
+        assert!(!app.should_quit);
+        assert!(app
+            .design
+            .as_ref()
+            .is_some_and(|design| design.run.is_none()));
+    }
+
+    #[test]
+    fn paste_is_ignored_while_help_is_open() {
+        let mut app = app();
+        press(&mut app, KeyCode::F(1));
+        app.handle_paste("abc");
+        assert_eq!(app.query, "");
+    }
+
+    #[test]
+    fn every_help_table_lists_ctrl_k() {
+        for keys in [BROWSE_KEYS, DESIGN_KEYS, RUN_KEYS] {
+            assert!(keys.iter().any(|(key, _)| *key == "Ctrl-K"));
+        }
+    }
+
+    #[test]
+    fn the_status_bar_hints_at_ctrl_k() {
+        assert!(app().status(1_000).0.contains("Ctrl-K"));
     }
 
     #[test]

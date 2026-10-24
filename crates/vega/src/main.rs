@@ -3,6 +3,8 @@ mod output;
 mod schema_source;
 mod tui;
 
+use std::path::PathBuf;
+
 use anyhow::Context;
 use clap::Parser;
 use vega_core::config::{self, AuthInput, FileConfig, Settings};
@@ -20,6 +22,7 @@ fn env_var(name: &str) -> Option<String> {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let one_shot = cli.search.is_some() || cli.describe.is_some() || cli.query.is_some();
 
     let env_uri = env_var("VEGA_GRAPHQL_URI");
     let has_endpoint = [cli.uri.as_deref(), env_uri.as_deref()]
@@ -30,64 +33,82 @@ fn main() -> anyhow::Result<()> {
         Some(dir) if !has_endpoint => config::load_file_config(&dir)?,
         _ => FileConfig::default(),
     };
-    let settings = config::resolve_settings(
-        cli.uri.clone(),
-        env_uri,
-        AuthInput {
-            key: env_var("VEGA_GRAPHQL_KEY"),
-            key_header: cli
-                .key_header
-                .clone()
-                .or_else(|| env_var("VEGA_GRAPHQL_KEY_HEADER")),
-            headers: env_var("VEGA_GRAPHQL_HEADERS"),
-        },
-        file_config,
-    )?;
+    let auth = AuthInput {
+        key: env_var("VEGA_GRAPHQL_KEY"),
+        key_header: cli
+            .key_header
+            .clone()
+            .or_else(|| env_var("VEGA_GRAPHQL_KEY_HEADER")),
+        headers: env_var("VEGA_GRAPHQL_HEADERS"),
+    };
+    // The terminal UI can start with no endpoint (it opens the connection modal); the
+    // one-shot commands cannot.
+    let settings = if one_shot {
+        config::resolve_settings(cli.uri.clone(), env_uri, auth, file_config)?
+    } else {
+        config::resolve_settings_partial(cli.uri.clone(), env_uri, auth, file_config)?
+    };
 
     let cache_dir = xdg::cache_dir()
         .context("cannot locate the cache directory: set XDG_CACHE_HOME or HOME")?;
+    if !one_shot {
+        return start_tui(&cli, settings, cache_dir);
+    }
     let cache_file = cache::cache_path(&cache_dir, &settings.uri);
     let entry = schema_source::load_or_fetch(&settings, &cache_file, cli.refresh)?;
     let age = entry.age_secs(cache::now_secs());
     let schema = &entry.response.data.schema;
 
-    if cli.search.is_some() || cli.describe.is_some() || cli.query.is_some() {
-        if cache::is_stale(age) {
-            eprintln!(
-                "warning: the schema cache for {} was fetched {} ago; run with --refresh to update it",
-                settings.uri,
-                cache::format_age(age)
-            );
-        }
-        if let Some(text) = &cli.search {
-            let hits = search::search(schema, text);
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&hits)?);
-            } else {
-                print!("{}", output::hits_text(&hits));
-            }
-        } else if let Some(target) = &cli.describe {
-            let detail = describe::detail(schema, target)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&detail)?);
-            } else {
-                print!("{}", describe::render_text(&detail));
-            }
-        } else if let Some(target) = &cli.query {
-            let args = QueryArgs {
-                target,
-                select: cli.select.as_deref(),
-                vars: &cli.vars,
-                json: cli.json,
-                run: cli.run,
-                yes: cli.yes,
-            };
-            print_query(schema, &settings, &args)?;
-        }
-        return Ok(());
+    if cache::is_stale(age) {
+        eprintln!(
+            "warning: the schema cache for {} was fetched {} ago; run with --refresh to update it",
+            settings.uri,
+            cache::format_age(age)
+        );
     }
+    if let Some(text) = &cli.search {
+        let hits = search::search(schema, text);
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&hits)?);
+        } else {
+            print!("{}", output::hits_text(&hits));
+        }
+    } else if let Some(target) = &cli.describe {
+        let detail = describe::detail(schema, target)?;
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&detail)?);
+        } else {
+            print!("{}", describe::render_text(&detail));
+        }
+    } else if let Some(target) = &cli.query {
+        let args = QueryArgs {
+            target,
+            select: cli.select.as_deref(),
+            vars: &cli.vars,
+            json: cli.json,
+            run: cli.run,
+            yes: cli.yes,
+        };
+        print_query(schema, &settings, &args)?;
+    }
+    Ok(())
+}
 
-    tui::run(entry, settings, cache_file)
+/// Starts the terminal UI. The schema is loaded inside it, in the background, so a
+/// missing endpoint or a failing server never stops it from opening.
+fn start_tui(cli: &Cli, settings: Settings, cache_dir: PathBuf) -> anyhow::Result<()> {
+    let entry = if settings.uri.is_empty() || cli.refresh {
+        None
+    } else {
+        match cache::load(&cache::cache_path(&cache_dir, &settings.uri)) {
+            Ok(entry) => entry,
+            Err(e) => {
+                eprintln!("warning: ignoring unusable cache ({e}); fetching a fresh schema");
+                None
+            }
+        }
+    };
+    tui::run(entry, settings, cache_dir)
 }
 
 struct QueryArgs<'a> {
