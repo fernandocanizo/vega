@@ -306,9 +306,15 @@ impl App {
             .design
             .as_ref()
             .is_some_and(|design| matches!(design.edit, Some(Edit::Text(_))));
-        if self.design.is_none() || in_text_editor {
-            for c in text.chars().filter(|c| !c.is_control()) {
-                self.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        let chars = text.chars().filter(|c| !c.is_control());
+        if self.design.is_none() {
+            self.notice = None;
+            self.query.extend(chars);
+            self.rerun_search();
+        } else if in_text_editor {
+            self.notice = None;
+            for c in chars {
+                self.handle_edit_key(KeyCode::Char(c));
             }
         }
     }
@@ -342,6 +348,7 @@ impl App {
         self.sessions.clear();
         self.confirm = None;
         self.help_open = false;
+        self.run_in_flight = false;
         self.run_seq += 1;
     }
 
@@ -1040,7 +1047,7 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert!(app.modal.is_none());
         assert_eq!(ctrl(&mut app, 'r'), Action::None);
-        assert!(app.status(0).0.contains("Ctrl-K"));
+        assert_eq!(app.status(0).0, "no endpoint: press Ctrl-K to set one");
         assert_eq!(app.refresh, RefreshState::Idle);
     }
 
@@ -1125,7 +1132,7 @@ mod tests {
         app.apply_refresh_ok(response.data.schema, 5_000);
         assert!(app.is_loaded());
         assert_eq!(app.hits.len(), 10);
-        assert!(app.status(5_000).0.contains("x"));
+        assert!(app.status(5_000).0.starts_with("x ·"));
     }
 
     #[test]
@@ -1159,6 +1166,25 @@ mod tests {
             .design
             .as_ref()
             .is_some_and(|design| design.run.is_none()));
+    }
+
+    #[test]
+    fn paste_keeps_question_marks_in_the_search_box() {
+        let mut app = app();
+        app.handle_paste("a?b");
+        assert_eq!(app.query, "a?b");
+        assert!(!app.help_open);
+    }
+
+    #[test]
+    fn paste_keeps_question_marks_in_a_text_variable_editor() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        app.handle_paste("1?2");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(raw_values(&app), ["1?2"]);
+        assert!(!app.help_open);
     }
 
     #[test]

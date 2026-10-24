@@ -57,6 +57,11 @@ pub fn run(
     };
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+        previous_hook(info);
+    }));
     let result = event_loop(&mut terminal, app, &cache_dir);
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
