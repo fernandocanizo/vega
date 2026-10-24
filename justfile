@@ -20,7 +20,7 @@ install:
 hooks:
     git config core.hooksPath githooks
 
-# List issues by status: open (default), doing, done or all.
+# List issues by status: open (default), doing, done, wontdo or all.
 issues status="open":
     #!/usr/bin/env bash
     set -euo pipefail
