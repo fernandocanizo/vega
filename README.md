@@ -22,13 +22,13 @@ Building, editing and running queries works; subscriptions can be built but not 
 - search operations and types by part of their name, then follow a field to its type to keep exploring, without opening a separate documentation panel.
 - keeps the schema cached on disk and tells you how old it is, so browsing and `--search` work instantly and offline after the first fetch.
 - credentials are read only from the environment (API key, bearer token, basic authentication or any HTTP headers, see [Authentication](docs/authentication.md)): they are never written to disk, the cache or logs, and they never appear in the response pane or in `--run` output.
+- starts with nothing configured: enter the endpoint and credentials (API key, basic authentication, bearer token or custom headers) in the connection modal, opened with Ctrl-K. What you type stays in memory for the session only (see [Authentication](docs/authentication.md)).
 - mutations ask for confirmation before they run.
 - generates the query and its typed variables from the selected fields, and the same query can be printed from the command line with `--query` and `--select`.
 
 ### Planned - NOT DONE YET
 
 - multiple server profiles, to switch between endpoints without changing flags or environment variables.
-- paste credentials inside the app and keep it in memory for the session only.
 - interactive logins such as OAuth 2.0.
 - skip schema refetches when the server reports that its version has not changed.
 - keep the selected row centered while scrolling long lists and field trees.
