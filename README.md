@@ -120,6 +120,16 @@ just fix     # apply formatting and fixable lint suggestions
 
 Contributor and agent conventions are in [AGENTS.md](AGENTS.md). The design is in [docs/superpowers/specs](docs/superpowers/specs/).
 
+## About the name
+
+Vega borrows some ideas from [Altair](https://altairgraphql.dev/) and brings them to the command line, so its name is a nod to Altair.
+
+The two names also belong to neighboring stars. Vega is the brightest star in Lyra and Altair is the brightest star in Aquila. Together with Deneb, the brightest star in Cygnus, they form the Summer Triangle, an asterism that is easy to spot in the northern hemisphere's summer sky. Vega and Altair are the close pair of the three, at about 25 and 17 light-years from the Sun.
+
+Their names come from Arabic: Vega from *an-nasr al-wāqi'* ("the falling eagle") and Altair from *al-nasr aṭ-ṭā'ir* ("the flying eagle"). In the East Asian legend celebrated at Qixi and Tanabata, Vega is the Weaver Girl and Altair the Cowherd, kept apart by the Milky Way and allowed to meet once a year.
+
+Vega is also a former and future pole star. Earth's axis slowly changes direction, a wobble called axial precession that takes about 26,000 years to complete a cycle, so the star nearest the north celestial pole changes over time. Vega was the pole star around 12,000 BCE and will be again in roughly 12,000 years, around 14,000 CE, when it will pass within about 5 degrees of the pole.
+
 ## License
 
 GNU Affero General Public License, see [LICENSE](LICENSE).
