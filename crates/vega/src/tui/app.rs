@@ -940,7 +940,7 @@ impl App {
             RefreshState::Failed(message) => {
                 let first_line = message.lines().next().unwrap_or("");
                 text.push_str(&format!(
-                    " · refresh failed: {first_line} · Ctrl-R retry · Ctrl-K connection"
+                    " · Ctrl-R retry · Ctrl-K connection · refresh failed: {first_line}"
                 ));
             }
         }
@@ -960,7 +960,7 @@ impl App {
             RefreshState::Failed(message) => {
                 let first_line = message.lines().next().unwrap_or("");
                 format!(
-                    "{} · could not load the schema: {first_line} · Ctrl-K connection · Ctrl-R retry",
+                    "{} · Ctrl-K connection · Ctrl-R retry · could not load the schema: {first_line}",
                     self.host
                 )
             }
