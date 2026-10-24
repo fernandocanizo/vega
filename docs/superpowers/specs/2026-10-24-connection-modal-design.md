@@ -37,8 +37,9 @@ There is no flag for any secret value. `--key-header` is allowed because a heade
 ## Startup
 
 - With no URI, the TUI opens the modal right away. It does not fail.
+- The TUI no longer loads the schema before it starts. It starts at once and loads the schema in a background thread: from the cache when one exists and `--refresh` is not given, otherwise from the server. The status bar says the schema is loading. A failed load (a 401, say) does not stop the program: the status bar shows the first line of the error with hints for `Ctrl-K` (connection) and `Ctrl-R` (retry).
 - A missing key never opens the modal, because a public server needs none.
-- Non-TUI commands (`--run` and the other CLI flags) keep a clear error for a missing URI, as described in issue 0010. They never open a modal.
+- Non-TUI commands (`--search`, `--describe`, `--query`, `--run`) keep a clear error for a missing URI, as described in issue 0010, still load the schema before they run, and treat a failed load as an error. They never open a modal.
 
 ## The modal (`crates/vega/src/tui/connection.rs`)
 
@@ -70,14 +71,14 @@ Layout:
 | Bearer | token | `Authorization: Bearer <token>` |
 | Custom headers | rows of name and value, with an add-row action | the rows |
 
-- Start state follows the environment: only `VEGA_GRAPHQL_KEY` set opens on API Key, pre-filled. `VEGA_GRAPHQL_HEADERS` set (with or without the key) opens on Custom headers, listing every effective header with the key as a row. Nothing set opens on None.
-- Basic or Bearer values that come from the environment appear under Custom headers, because they are plain `Authorization` headers there.
+- Start state follows the effective settings. No headers: None. Headers that are exactly the API key (`VEGA_GRAPHQL_KEY` alone, or a submitted API Key form): API Key, pre-filled. Any other headers: Custom headers, one row per header with values masked. Basic or Bearer values set through `VEGA_GRAPHQL_HEADERS`, or submitted earlier in the modal, are plain `Authorization` headers and therefore reopen as Custom headers rows. The distinction is stored as `Settings::key_only`, and `Settings` is also what the modal returns.
 
 Keys:
 
 - `Ctrl-K` opens the modal from any mode. It is listed in both help tables and in the hint line.
 - `Ctrl-T` reveals or masks the focused field. Everything is masked when the modal opens and again when it closes.
 - Bracketed paste is enabled. A paste goes only into the focused field, the trailing newline is stripped, and nothing is echoed. The alternate screen keeps the value out of the scrollback.
+- Outside the modal, a paste is typed into the search box or a text variable editor and ignored everywhere else, so pasted text can never trigger a command key.
 - `Enter` submits, `Esc` cancels.
 
 ## Submitting
