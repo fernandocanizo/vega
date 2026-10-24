@@ -723,6 +723,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphql-parser"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a818c0d883d7c0801df27be910917750932be279c7bc82dc541b8769425f409"
+dependencies = [
+ "combine",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2662,6 +2672,7 @@ name = "vega-core"
 version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
+ "graphql-parser",
  "reqwest",
  "serde",
  "serde_json",

@@ -52,7 +52,7 @@ fn capitalize(text: &str) -> String {
     }
 }
 
-fn is_composite(kind: TypeKind) -> bool {
+pub(crate) fn is_composite(kind: TypeKind) -> bool {
     matches!(
         kind,
         TypeKind::Object | TypeKind::Interface | TypeKind::Union

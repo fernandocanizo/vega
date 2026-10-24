@@ -7,6 +7,7 @@ pub mod config;
 pub mod describe;
 pub mod export;
 pub mod headers;
+pub mod import;
 pub mod querygen;
 pub mod response;
 pub mod schema;
