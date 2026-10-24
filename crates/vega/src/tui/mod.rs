@@ -145,7 +145,8 @@ fn spawn_fetch(app: &App, cache_dir: &Path, seq: u64, tx: &mpsc::Sender<Update>)
     let cache_file = cache::cache_path(cache_dir, &settings.uri);
     let tx = tx.clone();
     thread::spawn(move || {
-        let result = schema_source::fetch_entry(&settings);
+        let result = schema_source::fetch_entry(&settings)
+            .map_err(|e| anyhow::anyhow!(headers::mask(&format!("{e:#}"), &settings.headers)));
         let _ = tx.send(Update::Schema {
             seq,
             cache_file,
