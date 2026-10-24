@@ -34,7 +34,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 - Errors: `thiserror` types in `vega-core`, `anyhow` in the binary.
 - No `unwrap`/`expect` in non-test code unless an invariant makes failure impossible.
 - Tests: unit tests inline in modules, integration tests in `crates/*/tests/`. Tests never use the real network (a local `127.0.0.1` listener is fine). Use the shared fixture.
-- TUI logic lives in `tui/app.rs` as a pure state machine (key in, state out) so it is testable without a terminal.
+- TUI logic lives in `tui/app.rs` and `tui/connection.rs` as pure state machines (key in, state out) so it is testable without a terminal.
 
 ## Commits
 
@@ -53,7 +53,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 
 ## Rules that must not be broken
 
-- Header values (the API key from `VEGA_GRAPHQL_KEY` and every header in `VEGA_GRAPHQL_HEADERS`) come only from the environment. Never write one to disk, the cache, logs or error messages, and never add a CLI flag for a value (a flag that names a header, such as `--key-header`, is fine). No header value appears in the Response pane or in `--run` output: the client masks them all.
+- Header values (the API key from `VEGA_GRAPHQL_KEY`, every header in `VEGA_GRAPHQL_HEADERS`, and what is typed in the connection modal) come only from the environment or the modal. Never write one to disk, the cache, logs or error messages, and never add a CLI flag for a value (a flag that names a header, such as `--key-header`, is fine). Modal values live in memory only. No header value appears in the Response pane or in `--run` output: the client masks them all.
 - Variable values live only in memory for the session: never write them to disk, the cache or logs.
 - Config and cache paths follow XDG (`$XDG_CONFIG_HOME/vega`, `$XDG_CACHE_HOME/vega`, `$XDG_DATA_HOME/vega`). Precedence: CLI flag, then environment, then `config.toml`.
 - CLI commands print warnings to stderr only. Stdout (including `--json`) must stay machine-readable.

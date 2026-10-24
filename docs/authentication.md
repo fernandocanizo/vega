@@ -90,6 +90,20 @@ VEGA_GRAPHQL_HEADERS="Authorization: Bearer $TOKEN" \
 
 Mutations need `--yes` when there is no terminal.
 
+## In the terminal UI
+
+You do not need any environment variable to start vega. With no endpoint configured it opens the connection modal right away, and `Ctrl-K` opens it again from any screen.
+
+- The endpoint is the field at the top. Below it, the methods are listed on the left (None, Basic, API Key, Bearer, Custom headers) and the form of the selected method is on the right. Only one method is active.
+- `Tab` and `Shift-Tab` move between the fields, `Up` and `Down` move inside the list or the form, `Enter` connects and `Esc` cancels.
+- Secret fields show bullets. `Ctrl-T` reveals or hides the focused field until the modal closes.
+- Paste works in any field (the trailing newline is dropped).
+- Custom headers: `Ctrl-N` adds a row. A row with both fields empty is ignored.
+- The modal opens filled in from the environment: `VEGA_GRAPHQL_KEY` alone opens on API Key, `VEGA_GRAPHQL_HEADERS` opens on Custom headers (one row per header), nothing opens on None. Basic and Bearer values set through the environment are plain `Authorization` headers, so they appear as Custom headers rows.
+- Connecting with only new credentials keeps the schema, your query and its variables, and retries the schema load if it had failed. Changing the endpoint starts a new connection: the schema is loaded for it (from the cache when there is one) and the selection, query and variables are cleared.
+- Nothing you enter is saved. It lives in memory until you quit and is never written back to the environment, the cache or any file.
+- A server that rejects the schema request (a 401, for example) no longer stops vega from starting: the status bar shows the error, and `Ctrl-K` lets you fix the credentials.
+
 ## Troubleshooting
 
 - `server answered HTTP 401` or `403`: the header name or value is wrong. Check which header the server expects.
