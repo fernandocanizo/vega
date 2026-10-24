@@ -4,8 +4,9 @@ use clap::Parser;
 ///
 /// Without --search, --describe or --query, opens the interactive browser.
 ///
-/// Credentials are read from the environment only, because command line arguments are
-/// visible to other users of the machine. VEGA_GRAPHQL_KEY holds an API key, sent in the
+/// Credentials never go on the command line, because arguments are visible to other users
+/// of the machine. They come from the environment or, in the interactive UI, from the
+/// connection modal (Ctrl-K). VEGA_GRAPHQL_KEY holds an API key, sent in the
 /// X-API-Key header (or the one named by --key-header or VEGA_GRAPHQL_KEY_HEADER).
 /// VEGA_GRAPHQL_HEADERS holds any other headers, one `Name: value` per line, and wins on
 /// the same name. See docs/authentication.md.
