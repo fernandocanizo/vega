@@ -3,6 +3,8 @@
 
 use std::{cmp::Reverse, fmt};
 
+use base64::{engine::general_purpose::STANDARD, Engine};
+
 /// Name of the header that carries `VEGA_GRAPHQL_KEY` unless another one is configured.
 pub const DEFAULT_KEY_HEADER: &str = "X-API-Key";
 
@@ -89,6 +91,24 @@ pub fn merge(mut base: Vec<Header>, overrides: Vec<Header>) -> Vec<Header> {
         base.push(header);
     }
     base
+}
+
+/// `Authorization: Bearer <token>`.
+pub fn bearer(token: &str) -> Header {
+    Header {
+        name: "Authorization".to_string(),
+        value: format!("Bearer {token}"),
+    }
+}
+
+/// `Authorization: Basic <base64 of user:password>`. A user name cannot contain `:`
+/// (RFC 7617); callers reject it before calling this.
+pub fn basic(user: &str, password: &str) -> Header {
+    let encoded = STANDARD.encode(format!("{user}:{password}"));
+    Header {
+        name: "Authorization".to_string(),
+        value: format!("Basic {encoded}"),
+    }
 }
 
 /// Replaces every secret in `text` with `***`. For a value such as `Bearer abc` both the
@@ -210,5 +230,31 @@ mod tests {
         let headers = vec![h("X-Empty", "")];
         assert_eq!(mask("nothing to hide", &headers), "nothing to hide");
         assert_eq!(mask("no headers", &[]), "no headers");
+    }
+
+    #[test]
+    fn bearer_builds_the_authorization_header() {
+        let header = bearer("abc");
+        assert_eq!(header.name(), "Authorization");
+        assert_eq!(header.value(), "Bearer abc");
+    }
+
+    #[test]
+    fn basic_encodes_user_and_password_in_base64() {
+        // The example of RFC 7617.
+        let header = basic("Aladdin", "open sesame");
+        assert_eq!(header.name(), "Authorization");
+        assert_eq!(header.value(), "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
+    }
+
+    #[test]
+    fn basic_encodes_non_ascii_text_as_utf8() {
+        assert_eq!(basic("user", "pé").value(), "Basic dXNlcjpww6k=");
+    }
+
+    #[test]
+    fn basic_allows_colons_and_empty_passwords_in_the_password() {
+        assert_eq!(basic("user", "").value(), "Basic dXNlcjo=");
+        assert_eq!(basic("user", "a:b").value(), "Basic dXNlcjphOmI=");
     }
 }
