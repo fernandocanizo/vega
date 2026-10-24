@@ -1,6 +1,8 @@
 //! Terminal setup and the event loop. Everything testable lives in `app` and `ui`.
 
 pub mod app;
+#[allow(dead_code)] // wired into the app in a later commit
+pub mod connection;
 pub mod ui;
 
 use std::{
