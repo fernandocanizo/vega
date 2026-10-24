@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::app::{App, Edit, Focus, RunState, StatusLevel, VariableRow};
+use crate::tui::app::{list_offset, App, Edit, Focus, RunState, StatusLevel, VariableRow};
 use crate::tui::connection::{AuthType, Field, Focus as ModalFocus, Modal};
 use vega_core::response::LineKind;
 use vega_core::selection::{NodeKind, Row};
@@ -321,11 +321,25 @@ fn draw_hits(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!("Results ({})", app.hits.len()));
+    let selected = (!app.hits.is_empty() && !overlay_open(app)).then_some(app.hit_index);
+    draw_centered_list(frame, area, items, block, selected);
+}
+
+/// Renders `items` with the selected row kept in the middle of the pane and one empty line
+/// after the last item, so the end of the list is visible.
+fn draw_centered_list(
+    frame: &mut Frame,
+    area: Rect,
+    mut items: Vec<ListItem>,
+    block: Block,
+    selected: Option<usize>,
+) {
+    let height = usize::from(block.inner(area).height);
+    let offset = list_offset(items.len(), selected.unwrap_or(0), height);
+    items.push(ListItem::new(""));
     let list = List::new(items).block(block).highlight_style(focus_style());
-    let mut state = ListState::default();
-    if !app.hits.is_empty() && !overlay_open(app) {
-        state.select(Some(app.hit_index));
-    }
+    let mut state = ListState::default().with_offset(offset);
+    state.select(selected);
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -368,10 +382,8 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App, rows: &[Row], cursor: 
         frame.render_widget(Paragraph::new("No matches").block(block), parts[0]);
     } else {
         let items: Vec<ListItem> = rows.iter().map(|row| tree_item(app, row)).collect();
-        let list = List::new(items).block(block).highlight_style(focus_style());
-        let mut state = ListState::default();
-        state.select(cursor.filter(|_| !overlay_open(app)));
-        frame.render_stateful_widget(list, parts[0], &mut state);
+        let selected = cursor.filter(|_| !overlay_open(app));
+        draw_centered_list(frame, parts[0], items, block, selected);
     }
 
     let description = Block::default().borders(Borders::ALL).title("Description");
@@ -1130,6 +1142,30 @@ mod tests {
         let text = screen(&render(&app, 1_000));
         assert!(!text.contains("1000,"), "scrolled past the top");
         assert!(text.contains("1032"));
+    }
+
+    #[test]
+    fn a_centered_list_keeps_the_selection_in_the_middle_and_one_blank_line_at_the_end() {
+        let lines_at = |selected: usize| {
+            let items: Vec<ListItem> = (0..30).map(|n| ListItem::new(format!("row{n}"))).collect();
+            let mut terminal = Terminal::new(TestBackend::new(20, 12)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    draw_centered_list(frame, area, items, Block::bordered(), Some(selected));
+                })
+                .unwrap();
+            screen(&terminal)
+        };
+        let middle = lines_at(15);
+        assert!(middle.contains("row10") && middle.contains("row19"));
+        assert!(!middle.contains("row9 ") && !middle.contains("row20"));
+        let end = lines_at(29);
+        assert!(end.contains("row29") && end.contains("row21"));
+        assert!(!end.contains("row20"));
+        // 20 columns by 12 rows: the row above the bottom border is the blank line.
+        let blank: String = end.chars().skip(20 * 10 + 1).take(18).collect();
+        assert!(blank.trim().is_empty());
     }
 
     #[test]
