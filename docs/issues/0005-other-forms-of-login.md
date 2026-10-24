@@ -29,4 +29,4 @@ Decided and delivered together with 0004. Details are in `docs/authentication.md
 - Secrets: header values come only from the environment or the modal, live in memory only, and are masked in everything shown. No secret flag exists.
 - Profiles (0003): not decided here. The modal returns a `Settings` value, which is the natural unit for one profile.
 
-Not covered, and not scheduled: OAuth 2.0 (device code, authorization code with PKCE, client credentials), session cookies and mutual TLS. They need interactive flows or other transports and deserve their own issues.
+Not covered, and not scheduled: OAuth 2.0, session cookies and mutual TLS. They need interactive flows or other transports. See 0014. The research issue 0007 was closed as wontdo: copying Altair's methods is enough until other users ask for more.
