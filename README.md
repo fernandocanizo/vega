@@ -14,6 +14,10 @@ It is a general GraphQL tool: it works with any server that allows introspection
 
 Building, editing and running queries works; subscriptions can be built but not run.
 
+## Features
+
+- compose flawless queries by selecting fields directly from the documentation, Vega handles missing required parents, syntax and prettiness.
+
 ## Requirements
 
 To build and install Vega you need:
