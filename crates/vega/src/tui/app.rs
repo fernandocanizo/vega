@@ -6,6 +6,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use vega_core::cache::{format_age, is_stale};
 use vega_core::client;
 use vega_core::config::Settings;
+use vega_core::export;
 use vega_core::querygen::{self, GenerateError, GeneratedQuery, VariableDef};
 use vega_core::response::ResponseView;
 use vega_core::schema::{Root, Schema};
@@ -22,6 +23,8 @@ pub enum Action {
     Refresh,
     /// The event loop should send this request on a background thread.
     Run(RunRequest),
+    /// The event loop should put this text on the clipboard.
+    Copy(String),
     /// The endpoint changed: the event loop should load the schema for it, from the
     /// cache when there is one, otherwise from the server.
     Load,
@@ -98,6 +101,7 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("Space", "Select or unselect a field"),
     ("Tab", "Move to the next pane"),
     ("Enter", "Edit the highlighted variable (Variables pane)"),
+    ("Ctrl-C", "Copy the query as a JSON request body"),
     ("r", "Run the query"),
     ("Esc", "Back to the results"),
     ("q / Ctrl-Q", "Quit"),
@@ -115,6 +119,10 @@ pub const RUN_KEYS: &[(&str, &str)] = &[
     ("PgUp / PgDn", "Scroll the response ten lines"),
     ("Tab", "Switch between Response and Variables"),
     ("Enter", "Edit the highlighted variable (Variables pane)"),
+    (
+        "Ctrl-C",
+        "Copy the query as a JSON request body (Variables pane)",
+    ),
     ("r", "Run the query again"),
     ("Esc", "Back to Design"),
     ("q / Ctrl-Q", "Quit"),
@@ -394,6 +402,7 @@ impl App {
                     Action::None
                 }
                 KeyCode::Char('r') => self.request_refresh(),
+                KeyCode::Char('c') => self.copy_query(),
                 KeyCode::Home => {
                     self.jump_to_end(false);
                     Action::None
@@ -681,6 +690,35 @@ impl App {
             return Action::None;
         }
         self.start_run(request)
+    }
+
+    /// Ctrl-C: the query being built, with the variables typed so far, as the JSON body
+    /// of a request. Only while composing or in the Variables pane of Run mode; the
+    /// response is not copied yet.
+    fn copy_query(&mut self) -> Action {
+        if self.help_open || self.confirm.is_some() || self.is_editing() {
+            return Action::None;
+        }
+        if self.focused(Focus::Response) {
+            return Action::None;
+        }
+        let query = match self.generated_query() {
+            Some(Ok(query)) => query,
+            Some(Err(_)) => return self.notify("nothing to copy: select at least one field"),
+            None => return Action::None,
+        };
+        let values = self
+            .design
+            .as_ref()
+            .map(|design| design.values.clone())
+            .unwrap_or_default();
+        let copy = export::request_json(&self.schema, &query, &values);
+        self.notice = Some(match copy.missing {
+            0 => "copied the query as JSON".to_string(),
+            1 => "copied the query as JSON; 1 variable is unset or invalid, left out".to_string(),
+            n => format!("copied the query as JSON; {n} variables are unset or invalid, left out"),
+        });
+        Action::Copy(copy.text)
     }
 
     fn notify(&mut self, message: &str) -> Action {
@@ -2478,5 +2516,87 @@ mod tests {
         assert!(app.design.is_none());
         app.apply_run_result(1, Ok(view_of(200, "{}")));
         assert!(app.design.is_none());
+    }
+
+    fn copied(action: Action) -> serde_json::Value {
+        match action {
+            Action::Copy(text) => serde_json::from_str(&text).expect("a JSON body"),
+            other => panic!("expected Action::Copy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_c_copies_the_query_with_the_variables_typed_so_far() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "42");
+        press(&mut app, KeyCode::Enter);
+        let body = copied(ctrl(&mut app, 'c'));
+        assert_eq!(
+            body["query"],
+            "query Node($id: ID!) {\n  node(id: $id) {\n    __typename\n    id\n  }\n}"
+        );
+        assert_eq!(body["variables"], serde_json::json!({"id": "42"}));
+        assert_eq!(app.status(1_000).0, "copied the query as JSON");
+    }
+
+    #[test]
+    fn ctrl_c_copies_while_composing_and_says_what_was_left_out() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Tab); // back to Details
+        let body = copied(ctrl(&mut app, 'c'));
+        assert!(body.get("variables").is_none());
+        assert!(app.status(1_000).0.contains("1 variable is unset"));
+    }
+
+    #[test]
+    fn ctrl_c_with_nothing_selected_explains_itself() {
+        let mut app = design_app();
+        open_me(&mut app);
+        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+        assert!(app.status(1_000).0.contains("nothing to copy"));
+    }
+
+    #[test]
+    fn ctrl_c_does_nothing_in_browse_on_a_type_tree_or_while_editing() {
+        let mut app = design_app();
+        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+        assert!(!app.status(1_000).0.contains("copy"));
+
+        let mut app = design_app();
+        type_text(&mut app, "user");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.is_editing());
+        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+    }
+
+    #[test]
+    fn ctrl_c_in_run_mode_copies_from_the_variables_pane_only() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // id
+        run_request(press(&mut app, KeyCode::Char('r')));
+        assert!(app.focused(Focus::Response));
+        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+
+        press(&mut app, KeyCode::Tab);
+        assert!(app.focused(Focus::Variables));
+        let body = copied(ctrl(&mut app, 'c'));
+        assert_eq!(body["query"], "query Me {\n  me {\n    id\n  }\n}");
+    }
+
+    #[test]
+    fn the_design_and_run_help_list_ctrl_c() {
+        for keys in [DESIGN_KEYS, RUN_KEYS] {
+            assert!(keys.iter().any(|(key, _)| *key == "Ctrl-C"));
+        }
     }
 }
