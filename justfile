@@ -19,3 +19,16 @@ install:
 # Point git at the repository hooks.
 hooks:
     git config core.hooksPath githooks
+
+# List issues by status: open (default), doing, done or all.
+issues status="open":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for f in docs/issues/[0-9]*.md; do
+        state=$(sed -n 's/^Status: *//p' "$f" | head -1)
+        word=$(printf '%s' "$state" | cut -d' ' -f1 | tr '[:upper:]' '[:lower:]')
+        title=$(sed -n 's/^# *//p' "$f" | head -1)
+        if [ "{{status}}" = all ] || [ "$word" = "{{status}}" ]; then
+            printf '%s  %-34s  %s\n' "$(basename "$f" | cut -d- -f1)" "$state" "$title"
+        fi
+    done
