@@ -1,6 +1,6 @@
 # Analyze query editing and copy/paste support
 
-Status: doing
+Status: done
 
 ## Problem
 

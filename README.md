@@ -11,6 +11,7 @@ It is a general GraphQL tool: it works with any server that allows introspection
 - Interactive TUI, plus command line flags (`--search`, `--describe`, `--json`) so scripts and coding agents can use the same features.
 - Caches the schema per server, shows how old the cache is, and refreshes it on demand.
 - Build a query by picking fields from a tree: expand with →, select with Space (optional arguments too), edit the typed variables with Tab and Enter, and watch the generated query update, press r to run it and read the response (mutations ask first).
+- Copy the query being built as the JSON body of a request with Ctrl-C, and paste a query from outside (GraphQL or a JSON body) to rebuild it from the schema.
 
 Building, editing and running queries works; subscriptions can be built but not run.
 
@@ -24,6 +25,7 @@ Building, editing and running queries works; subscriptions can be built but not 
 - credentials come from the environment or from the connection modal (API key, bearer token, basic authentication or any HTTP headers, see [Authentication](docs/authentication.md)): they are never written to disk, the cache or logs, and they never appear in the response pane or in `--run` output.
 - starts with nothing configured: enter the endpoint and credentials in the connection modal, opened with Ctrl-K. What you type stays in memory for the session only.
 - mutations ask for confirmation before they run.
+- Ctrl-C copies the query and the variables you set as a JSON request body you can feed to `curl`; pasting a query brings it in, keeping only what the schema knows, and shows it exactly as if you had selected the fields yourself.
 - generates the query and its typed variables from the selected fields, and the same query can be printed from the command line with `--query` and `--select`.
 
 ### Planned - NOT DONE YET
@@ -32,7 +34,7 @@ Building, editing and running queries works; subscriptions can be built but not 
 - interactive logins such as OAuth 2.0.
 - skip schema refetches when the server reports that its version has not changed.
 - keep the selected row centered while scrolling long lists and field trees.
-- copy&paste support for queries, variables and responses.
+- copy the response to the clipboard.
 - a position indicator (line count and percentage) when moving through long queries and responses.
 - better colors, a switch to turn them off, and themes you can configure.
 - export results to a file, with a download-like folder picker.
@@ -111,6 +113,30 @@ vega --refresh                    # refetch the schema instead of using the cach
 ```
 
 The first run fetches the schema; later runs use the cache. The cache age is shown in the status bar of the interactive browser (red after 24 hours) and as a warning on stderr for the command line flags. Press `?` or `F1` inside the browser to see all the keys.
+
+### Copy and paste
+
+`Ctrl-C` copies the query you are building, with the variables you have set, as the JSON body of a GraphQL request:
+
+```json
+{
+  "query": "query UserRead($id: ID!) {\n  userRead(id: $id) {\n    id\n  }\n}",
+  "variables": {
+    "id": "42"
+  }
+}
+```
+
+Paste it into a file and send it with `curl -H 'Content-Type: application/json' -H "X-API-Key: $VEGA_GRAPHQL_KEY" -d @body.json "$VEGA_GRAPHQL_URI"`. Headers are never part of the copy. Variables that are unset or invalid are left out, and the status bar says how many.
+
+To bring a query in, paste it with your terminal's paste (usually `Ctrl-Shift-V`, or a middle click) while you are composing a query or looking at the results. It can be a bare GraphQL operation or a JSON body with `query`, `variables` and `operationName`. Vega keeps only what the schema knows, fills the variables by where they are used, and regenerates the query, so it looks like one you built by selecting fields. The first root field that exists in the schema is used, aliases and directives are dropped, and the status bar counts what was discarded. If it would replace a selection, Vega asks first. Anything that is not a query keeps going to the search box, or into the variable you are editing.
+
+### Caveats
+
+- Copying uses the OSC 52 escape sequence: the terminal puts the text on the clipboard, which is what makes it work over SSH. A terminal that ignores OSC 52 copies nothing, and Vega cannot tell. [kitty, Alacritty, WezTerm and foot support it](https://github.com/ojroques/vim-oscyank/blob/main/README.md); some terminals only do in recent versions or when a setting allows it, so check yours. You can test it with `printf '\e]52;c;%s\a' "$(printf hello | base64)"` and then paste.
+- In tmux, set `set -g set-clipboard on` in `~/.tmux.conf`, otherwise tmux drops the sequence.
+- The clipboard is outside Vega: variable values you copy can end up in a clipboard manager's history, so be careful with values that are secrets.
+- Pasting into Vega relies on your terminal's own paste (bracketed paste), so it works the same locally, over SSH and in tmux. Vega never reads the clipboard itself.
 
 ### Try it with a public server!
 
