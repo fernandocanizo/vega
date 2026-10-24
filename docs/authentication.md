@@ -1,0 +1,97 @@
+# Authentication
+
+Vega sends HTTP headers with every request. All the supported methods are ways to produce those headers, so any server that authenticates through headers works.
+
+| Method | What you set | Header sent |
+| --- | --- | --- |
+| None | nothing | none |
+| API key | `VEGA_GRAPHQL_KEY` | `X-API-Key: <key>` |
+| API key, other header name | `VEGA_GRAPHQL_KEY` and `--key-header` or `VEGA_GRAPHQL_KEY_HEADER` | `<name>: <key>` |
+| Bearer token | `VEGA_GRAPHQL_HEADERS` | `Authorization: Bearer <token>` |
+| Basic | `VEGA_GRAPHQL_HEADERS` | `Authorization: Basic <base64 of user:password>` |
+| Custom headers | `VEGA_GRAPHQL_HEADERS` | whatever you list |
+
+## Why credentials are not flags
+
+Command line arguments are visible to other users of the machine (`ps`, `/proc/<pid>/cmdline`) and end up in the shell history. Vega therefore reads every secret from the environment and has no flag for one. `--key-header` only names a header, which is not a secret.
+
+Vega never writes a header value to disk, the cache or logs, and masks every value (and, for values such as `Bearer abc`, the part after the space) in the Response pane, in `--run` output and in error messages.
+
+## Variables
+
+- `VEGA_GRAPHQL_KEY`: an API key.
+- `VEGA_GRAPHQL_KEY_HEADER` / `--key-header NAME`: the header that carries the key. Default `X-API-Key`. The flag wins.
+- `VEGA_GRAPHQL_HEADERS`: any other headers, one `Name: value` per line, like `curl -H`. Blank lines are ignored. The value may contain colons. A malformed line stops vega with an error that names the line number and never prints the value.
+
+Headers are merged by name, ignoring case. The key is applied first and `VEGA_GRAPHQL_HEADERS` after it, so on the same name the entry from `VEGA_GRAPHQL_HEADERS` wins.
+
+## Recipes
+
+Set the endpoint with `--uri`, `VEGA_GRAPHQL_URI` or `uri` in `config.toml`; the examples use `VEGA_GRAPHQL_URI`.
+
+### API key in `X-API-Key`
+
+```sh
+export VEGA_GRAPHQL_URI=https://api.example.com/graphql
+export VEGA_GRAPHQL_KEY=...
+vega --search user
+```
+
+### API key in another header
+
+```sh
+VEGA_GRAPHQL_KEY=... vega --key-header X-Token --search user
+# or
+VEGA_GRAPHQL_KEY=... VEGA_GRAPHQL_KEY_HEADER=X-Token vega --search user
+```
+
+### Bearer token
+
+```sh
+export VEGA_GRAPHQL_HEADERS="Authorization: Bearer $TOKEN"
+vega --search user
+```
+
+### Basic authentication
+
+The header value is the base64 of `user:password`:
+
+```sh
+export VEGA_GRAPHQL_HEADERS="Authorization: Basic $(printf '%s' 'user:password' | base64)"
+vega --search user
+```
+
+### Several headers
+
+```sh
+export VEGA_GRAPHQL_HEADERS="Authorization: Bearer $TOKEN
+X-Tenant: team-9"
+vega --query Query.me --select id --run
+```
+
+### Keeping secrets out of the shell history
+
+Read the secret without echoing it, or take it from a password manager:
+
+```sh
+read -rs VEGA_GRAPHQL_KEY && export VEGA_GRAPHQL_KEY
+VEGA_GRAPHQL_KEY=$(pass show api/example) vega --search user
+```
+
+### Scripts and coding agents
+
+Everything above works without a terminal: set the variables on the process and use `--json`:
+
+```sh
+VEGA_GRAPHQL_URI=https://api.example.com/graphql \
+VEGA_GRAPHQL_HEADERS="Authorization: Bearer $TOKEN" \
+  vega --query Query.me --select id --run --json
+```
+
+Mutations need `--yes` when there is no terminal.
+
+## Troubleshooting
+
+- `server answered HTTP 401` or `403`: the header name or value is wrong. Check which header the server expects.
+- `VEGA_GRAPHQL_HEADERS line N: expected `Name: value``: line N has no colon, an empty value or an invalid header name (names allow letters, digits and ``!#$%&'*+-.^_`|~``).
+- `the key header name is not valid`: fix `--key-header` or `VEGA_GRAPHQL_KEY_HEADER`.

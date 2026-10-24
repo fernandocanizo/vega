@@ -53,7 +53,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 
 ## Rules that must not be broken
 
-- The API key comes only from the `VEGA_GRAPHQL_KEY` environment variable. Never write it to disk, the cache, logs or error messages, and never add a CLI flag for it. The key never appears in the Response pane or in `--run` output (the client masks it).
+- Header values (the API key from `VEGA_GRAPHQL_KEY` and every header in `VEGA_GRAPHQL_HEADERS`) come only from the environment. Never write one to disk, the cache, logs or error messages, and never add a CLI flag for a value (a flag that names a header, such as `--key-header`, is fine). No header value appears in the Response pane or in `--run` output: the client masks them all.
 - Variable values live only in memory for the session: never write them to disk, the cache or logs.
 - Config and cache paths follow XDG (`$XDG_CONFIG_HOME/vega`, `$XDG_CACHE_HOME/vega`, `$XDG_DATA_HOME/vega`). Precedence: CLI flag, then environment, then `config.toml`.
 - CLI commands print warnings to stderr only. Stdout (including `--json`) must stay machine-readable.
