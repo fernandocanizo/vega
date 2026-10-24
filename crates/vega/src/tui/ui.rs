@@ -145,7 +145,12 @@ fn draw_connection(frame: &mut Frame, area: Rect, modal: &Modal) {
 
     let uri_focused = modal.focus() == ModalFocus::Uri;
     frame.render_widget(
-        Paragraph::new(field_text(modal.uri(), uri_focused)).block(pane("URI", uri_focused)),
+        Paragraph::new(field_text(
+            modal.uri(),
+            uri_focused,
+            usize::from(rows[0].width.saturating_sub(2)),
+        ))
+        .block(pane("URI", uri_focused)),
         rows[0],
     );
 
@@ -213,7 +218,11 @@ fn draw_form(frame: &mut Frame, area: Rect, modal: &Modal) {
             field.label().to_string(),
             Style::default().add_modifier(Modifier::BOLD),
         ));
-        lines.push(field_text(field, focused));
+        lines.push(field_text(
+            field,
+            focused,
+            usize::from(area.width.saturating_sub(2)),
+        ));
         // A blank line between the rows of Custom headers.
         if modal.selected() == AuthType::CustomHeaders && index % 2 == 1 {
             lines.push(Line::raw(""));
@@ -225,11 +234,25 @@ fn draw_form(frame: &mut Frame, area: Rect, modal: &Modal) {
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
 }
 
-/// A field's text, with a cursor mark when it has focus.
-fn field_text(field: &Field, focused: bool) -> Line<'static> {
+/// A field's text, with a cursor mark when it has focus. Text wider than
+/// `width` shows its tail, so the end being typed stays visible.
+fn field_text(field: &Field, focused: bool, width: usize) -> Line<'static> {
     let mut text = field.display();
     if focused {
         text.push('▏');
+    }
+    let total = text.chars().count();
+    if total > width {
+        text = match width {
+            0 => String::new(),
+            1 => text.chars().skip(total - 1).collect(),
+            _ => {
+                let tail: String = text.chars().skip(total - (width - 1)).collect();
+                format!("…{tail}")
+            }
+        };
+    }
+    if focused {
         return Line::styled(text, Style::default().add_modifier(Modifier::REVERSED));
     }
     Line::raw(text)
@@ -611,10 +634,79 @@ mod tests {
     fn the_modal_does_not_panic_on_tiny_terminals() {
         let mut app = App::empty(empty_settings());
         ctrl(&mut app, 'k');
-        for (w, h) in [(20, 5), (1, 1), (0, 0), (3, 40), (200, 3)] {
+        for (w, h) in [
+            (20, 5),
+            (1, 1),
+            (0, 0),
+            (3, 40),
+            (200, 3),
+            (4, 30),
+            (5, 30),
+            (6, 30),
+        ] {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
             terminal.draw(|frame| draw(frame, &app, 0)).unwrap();
         }
+    }
+
+    #[test]
+    fn a_long_uri_shows_its_end_and_the_cursor() {
+        let uri = format!("https://{}/the-end", "a".repeat(104));
+        let mut app = App::empty(empty_settings());
+        for c in uri.chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        let text = screen(&render(&app, 0));
+        assert!(text.contains("/the-end▏"));
+        assert!(!text.contains("https://aaa"));
+    }
+
+    #[test]
+    fn a_long_masked_secret_shows_the_tail_of_the_bullets() {
+        let mut app = App::empty(Settings {
+            uri: "https://x.example.com/graphql".into(),
+            ..empty_settings()
+        });
+        ctrl(&mut app, 'k');
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Down);
+        }
+        key(&mut app, KeyCode::Tab);
+        for c in "s".repeat(80).chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        let text = screen(&render(&app, 0));
+        assert!(text.contains("•▏"));
+        assert!(!text.contains("ssss"));
+        ctrl(&mut app, 't');
+        assert!(screen(&render(&app, 0)).contains("ssss▏"));
+    }
+
+    #[test]
+    fn custom_headers_keep_the_focused_row_visible_on_a_short_terminal() {
+        let mut app = App::empty(Settings {
+            uri: "https://x.example.com/graphql".into(),
+            ..empty_settings()
+        });
+        ctrl(&mut app, 'k');
+        for _ in 0..4 {
+            key(&mut app, KeyCode::Down);
+        }
+        key(&mut app, KeyCode::Tab);
+        for c in "X-First".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        for name in ["X-Two", "X-Three", "X-Four", "X-Five", "X-Last"] {
+            ctrl(&mut app, 'n');
+            for c in name.chars() {
+                key(&mut app, KeyCode::Char(c));
+            }
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        terminal.draw(|frame| draw(frame, &app, 0)).unwrap();
+        let text = screen(&terminal);
+        assert!(text.contains("X-Last▏"));
+        assert!(!text.contains("X-First"));
     }
 
     #[test]
