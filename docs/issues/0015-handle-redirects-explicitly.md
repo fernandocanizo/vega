@@ -1,6 +1,6 @@
 # Handle redirects explicitly: say what happened and never send credentials to another origin
 
-Status: open (not scheduled)
+Status: done
 Related: 0006 (find public GraphQL servers), 0010 (clear errors)
 
 ## Problem
@@ -45,3 +45,10 @@ Verified with two local listeners on 127.0.0.1: the first answers `307` with `Lo
 - The error never contains a header value.
 - The TUI shows the message in the status bar when the schema fetch is redirected.
 - `docs/authentication.md` states that redirects are not followed.
+
+## Resolution
+
+Fixed in the same branch as 0004. The client no longer follows redirects. A `301`, `302`, `303`, `307` or `308` answer is an error: `server redirected the request (HTTP 301) to <url>: use that URL as the endpoint`, with the target resolved against the endpoint and stripped of user info, query and fragment (or `without saying where to` when there is no `Location`). It applies to the schema fetch and to `--run` and the Run pane, and nothing is sent to the target. The simple rule was chosen: it never follows, not even same-origin `307` and `308`, and treats requests with and without headers the same.
+
+Tests: `crates/vega-core/tests/client.rs` (five statuses, relative and stripped targets, no `Location`, the bystander listener never contacted), `crates/vega/tests/cli.rs` (exit code, empty stdout, no secret in the message) and `crates/vega/src/tui/mod.rs` (the status bar names the new URL).
+
