@@ -24,3 +24,7 @@ Colors in the TUI are fixed. Minimal or old terminals do not handle colors well,
 ## Deliverable
 
 A recommendation with tradeoffs, then implementation issues. No code in this issue.
+
+## Current rule
+
+Until themes exist, the focus color is fixed to the terminal's magenta (`FOCUS` in `crates/vega/src/tui/ui.rs`, see `AGENTS.md`). A theme should make that one color configurable, and the "no color" mode must still show the focus (reversed video already does, whatever the color).
