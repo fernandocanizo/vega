@@ -1,6 +1,6 @@
 # Keep the selected row centered while scrolling lists and the query tree
 
-Status: open (not scheduled)
+Status: done
 
 ## Problem
 
