@@ -14,7 +14,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 - `just check`: format check, clippy with `-D warnings`, all tests. Run before every commit. CI (`.github/workflows/ci.yml`) runs the same command on every pull request and on pushes to `main`.
 - `just fix`: apply formatting and auto-fixable lints.
 - `just install`: release build copied to `~/.local/bin/vega`.
-- `just hooks`: enable the git hooks (pre-commit runs `just check`; commit-msg enforces the commit rules below).
+- `just hooks`: enable the git hooks (commit-msg enforces the commit rules below and then runs `just check`).
 
 ## Layout
 
@@ -32,7 +32,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 
 ## Commits
 
-- Atomic: one logical change per commit. A short task is one commit; a bigger task is split by step or concern (for example the model, then its tests' fixtures, then the wiring). Every commit must pass `just check` (the pre-commit hook enforces it), so never commit a red test on its own.
+- Atomic: one logical change per commit. A short task is one commit; a bigger task is split by step or concern (for example the model, then its tests' fixtures, then the wiring). Every commit must pass `just check` (the commit-msg hook enforces it), so never commit a red test on its own.
 - Subject: `tag: what the commit does`, present tense, imperative, at most 72 characters, no trailing period.
 - Tags are lowercase and at most 5 characters: `feat`, `fix`, `ref` (refactor), `doc`, `test`, `chore`. Add a new tag only when none fits, and keep it within 5 characters.
 - Body (optional, separated by a blank line): explain why when it is not obvious from the diff. Wrap every line at 72 characters. Wrap with `fmt -w 72` (coreutils) or `fold -s -w 72`.

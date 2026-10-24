@@ -1,10 +1,17 @@
 #!/bin/sh
-# Rejects commit messages that break the rules in AGENTS.md.
+# Rejects commit messages that break the rules in AGENTS.md, then runs
+# `just check`. The check lives here, not in pre-commit, because git runs
+# pre-commit before the editor opens: an aborted commit would still pay
+# for the whole test run.
 msg_file="$1"
 fail() {
     echo "commit-msg: $1" >&2
     exit 1
 }
+
+# An empty message (ignoring comments) means the commit was aborted in
+# the editor; git stops right after this hook, so do nothing.
+grep -qv '^[[:space:]]*\(#\|$\)' "$msg_file" || exit 0
 
 subject=$(sed -n '1p' "$msg_file")
 printf '%s' "$subject" | grep -Eq '^[a-z]{2,5}: [^ ].*[^.]$' ||
@@ -18,4 +25,4 @@ grep -v '^#' "$msg_file" | awk 'length($0) > 72 { bad = 1 } END { exit !bad }' &
 grep -Eiq 'co-authored-by|generated with|made with' "$msg_file" &&
     fail "no co-author or AI attribution lines"
 
-exit 0
+just check

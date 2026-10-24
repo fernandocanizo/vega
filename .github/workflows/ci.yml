@@ -28,6 +28,6 @@ jobs:
 
       - uses: extractions/setup-just@v4
 
-      # Same command as the pre-commit hook: format check, clippy, tests.
+      # Same command as the commit-msg hook: format check, clippy, tests.
       - name: Run checks
         run: just check
