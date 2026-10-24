@@ -15,6 +15,12 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 - `just fix`: apply formatting and auto-fixable lints.
 - `just install`: release build copied to `~/.local/bin/vega`.
 - `just hooks`: enable the git hooks (commit-msg enforces the commit rules below and then runs `just check`).
+- `just issues [open|doing|done|all]`: list the issues in `docs/issues` by status (default `open`).
+
+## Issues
+
+- Issues are Markdown files in `docs/issues/`, named `NNNN-slug.md`. Done issues stay in place, so references to their number keep working.
+- The `Status:` line holds a lowercase state, optionally followed by a note in parentheses: `open`, `doing` or `done` (for example `open (needs brainstorming)`). Change the state in that line; never rename the file.
 
 ## Layout
 
