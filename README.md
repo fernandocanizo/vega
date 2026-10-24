@@ -21,8 +21,8 @@ Building, editing and running queries works; subscriptions can be built but not 
 - every feature is also available as a command line flag with `--json` output, so scripts and coding agents can search the schema, describe types and generate or run queries without a UI.
 - search operations and types by part of their name, then follow a field to its type to keep exploring, without opening a separate documentation panel.
 - keeps the schema cached on disk and tells you how old it is, so browsing and `--search` work instantly and offline after the first fetch.
-- credentials are read only from the environment (API key, bearer token, basic authentication or any HTTP headers, see [Authentication](docs/authentication.md)): they are never written to disk, the cache or logs, and they never appear in the response pane or in `--run` output.
-- starts with nothing configured: enter the endpoint and credentials (API key, basic authentication, bearer token or custom headers) in the connection modal, opened with Ctrl-K. What you type stays in memory for the session only (see [Authentication](docs/authentication.md)).
+- credentials come from the environment or from the connection modal (API key, bearer token, basic authentication or any HTTP headers, see [Authentication](docs/authentication.md)): they are never written to disk, the cache or logs, and they never appear in the response pane or in `--run` output.
+- starts with nothing configured: enter the endpoint and credentials in the connection modal, opened with Ctrl-K. What you type stays in memory for the session only.
 - mutations ask for confirmation before they run.
 - generates the query and its typed variables from the selected fields, and the same query can be printed from the command line with `--query` and `--select`.
 
