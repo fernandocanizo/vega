@@ -80,6 +80,7 @@ const PAGE: usize = 10;
 pub const BROWSE_KEYS: &[(&str, &str)] = &[
     ("↑ / ↓", "Move through the results"),
     ("PgUp / PgDn", "Move ten results"),
+    ("Ctrl-Home / Ctrl-End", "Go to the first or last result"),
     ("Enter / →", "Open the highlighted item as a tree"),
     ("Ctrl-R", "Refresh the schema"),
     ("Ctrl-K", "Open the connection (endpoint and credentials)"),
@@ -90,6 +91,8 @@ pub const BROWSE_KEYS: &[(&str, &str)] = &[
 /// Hotkeys in Design mode.
 pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("↑ / ↓", "Move through the tree"),
+    ("PgUp / PgDn", "Move ten rows"),
+    ("Ctrl-Home / Ctrl-End", "Go to the first or last row"),
     ("→", "Expand a node, or step into it"),
     ("←", "Collapse a node, or go to its parent"),
     ("Space", "Select or unselect a field"),
@@ -391,6 +394,14 @@ impl App {
                     Action::None
                 }
                 KeyCode::Char('r') => self.request_refresh(),
+                KeyCode::Home => {
+                    self.jump_to_end(false);
+                    Action::None
+                }
+                KeyCode::End => {
+                    self.jump_to_end(true);
+                    Action::None
+                }
                 KeyCode::Char('k') => {
                     self.help_open = false;
                     self.modal = Some(Modal::new(&self.settings));
@@ -575,6 +586,8 @@ impl App {
             KeyCode::Char(' ') => self.toggle_under_cursor(),
             KeyCode::Down => self.move_cursor(1),
             KeyCode::Up => self.move_cursor(-1),
+            KeyCode::PageDown => self.move_cursor(PAGE as isize),
+            KeyCode::PageUp => self.move_cursor(-(PAGE as isize)),
             KeyCode::Right => self.expand_or_step_in(),
             KeyCode::Left => self.collapse_or_go_up(),
             _ => {}
@@ -806,6 +819,27 @@ impl App {
         self.design.as_ref().is_some_and(|design| {
             design.selection.contains(path) || design.selection.arg_included(path)
         })
+    }
+
+    /// Ctrl-Home / Ctrl-End: selects the first or last row of the Results list or of the
+    /// tree. Does nothing while a modal, the help or an edit has the keys, or when another
+    /// pane has the focus.
+    fn jump_to_end(&mut self, last: bool) {
+        if self.help_open || self.is_editing() || self.in_run_mode() {
+            return;
+        }
+        if self.design.is_none() {
+            self.hit_index = if last {
+                self.hits.len().saturating_sub(1)
+            } else {
+                0
+            };
+        } else if self.focused(Focus::Details) {
+            let end = self.design_rows().len().saturating_sub(1);
+            if let Some(design) = self.design.as_mut() {
+                design.cursor = if last { end } else { 0 };
+            }
+        }
     }
 
     fn move_cursor(&mut self, delta: isize) {
@@ -1046,6 +1080,41 @@ mod tests {
         press(app, KeyCode::Tab); // the token field
         type_text(app, token);
         press(app, KeyCode::Enter)
+    }
+
+    fn press_ctrl(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn ctrl_home_and_end_jump_to_the_ends_of_the_results() {
+        let mut app = app();
+        app.hits = (0..25)
+            .map(|n| vega_core::search::Hit {
+                kind: vega_core::search::HitKind::Query,
+                path: format!("f{n}"),
+                summary: String::new(),
+            })
+            .collect();
+        press_ctrl(&mut app, KeyCode::End);
+        assert_eq!(app.hit_index, 24);
+        press_ctrl(&mut app, KeyCode::Home);
+        assert_eq!(app.hit_index, 0);
+    }
+
+    #[test]
+    fn page_keys_and_ctrl_home_end_move_the_tree_cursor() {
+        let mut app = design_app();
+        open_me(&mut app);
+        let last = app.design_rows().len() - 1;
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.design.as_ref().unwrap().cursor, last.min(10));
+        press_ctrl(&mut app, KeyCode::End);
+        assert_eq!(app.design.as_ref().unwrap().cursor, last);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.design.as_ref().unwrap().cursor, last.saturating_sub(10));
+        press_ctrl(&mut app, KeyCode::Home);
+        assert_eq!(app.design.as_ref().unwrap().cursor, 0);
     }
 
     #[test]
