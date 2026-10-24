@@ -112,6 +112,24 @@ vega --refresh                    # refetch the schema instead of using the cach
 
 The first run fetches the schema; later runs use the cache. The cache age is shown in the status bar of the interactive browser (red after 24 hours) and as a warning on stderr for the command line flags. Press `?` or `F1` inside the browser to see all the keys.
 
+### Try it without a server of your own
+
+Vega needs no configuration to start, so you can point it at a public GraphQL API. Two that work without credentials:
+
+```sh
+# Countries: small and easy to browse
+vega --uri https://countries.trevorblades.com/graphql
+vega --uri https://countries.trevorblades.com/graphql --search country
+vega --uri https://countries.trevorblades.com/graphql --query Query.country --select name,capital --var code=AR --run
+
+# Rick and Morty: a larger schema with pagination and filters
+vega --uri https://rickandmortyapi.com/graphql
+vega --uri https://rickandmortyapi.com/graphql --search character
+vega --uri https://rickandmortyapi.com/graphql --query Query.character --select name,species --var id=1 --run
+```
+
+[APIs-guru/graphql-apis](https://github.com/APIs-guru/graphql-apis) keeps a longer list of public GraphQL APIs. It does not say which ones need a key or have introspection disabled, so some will not work as they are: for a key or other headers, press `Ctrl-K` in the browser or see [Authentication](docs/authentication.md). Public endpoints also change or disappear, so these examples may stop working one day.
+
 ## Development
 
 ```sh
