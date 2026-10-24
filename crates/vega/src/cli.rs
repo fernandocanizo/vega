@@ -3,13 +3,23 @@ use clap::Parser;
 /// Explore a GraphQL server's schema from the terminal.
 ///
 /// Without --search, --describe or --query, opens the interactive browser.
-/// The API key is read from the VEGA_GRAPHQL_KEY environment variable.
+///
+/// Credentials are read from the environment only, because command line arguments are
+/// visible to other users of the machine. VEGA_GRAPHQL_KEY holds an API key, sent in the
+/// X-API-Key header (or the one named by --key-header or VEGA_GRAPHQL_KEY_HEADER).
+/// VEGA_GRAPHQL_HEADERS holds any other headers, one `Name: value` per line, and wins on
+/// the same name. See docs/authentication.md.
 #[derive(Debug, Parser)]
 #[command(name = "vega", version)]
 pub struct Cli {
     /// GraphQL endpoint (overrides VEGA_GRAPHQL_URI and config.toml)
     #[arg(long)]
     pub uri: Option<String>,
+
+    /// Header name that carries VEGA_GRAPHQL_KEY (default X-API-Key; overrides
+    /// VEGA_GRAPHQL_KEY_HEADER)
+    #[arg(long, value_name = "NAME")]
+    pub key_header: Option<String>,
 
     /// Refetch the schema from the server instead of using the cache
     #[arg(long)]
