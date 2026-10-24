@@ -17,6 +17,25 @@ Building, editing and running queries works; subscriptions can be built but not 
 ## Features
 
 - compose flawless queries by selecting fields directly from the documentation, Vega handles missing required parents, syntax and prettiness.
+- runs entirely in the terminal, so you can explore and query a server over SSH or on a machine with no desktop or browser.
+- every feature is also available as a command line flag with `--json` output, so scripts and coding agents can search the schema, describe types and generate or run queries without a UI.
+- search operations and types by part of their name, then follow a field to its type to keep exploring, without opening a separate documentation panel.
+- keeps the schema cached on disk and tells you how old it is, so browsing and `--search` work instantly and offline after the first fetch.
+- credentials are read only from the environment: they are never written to disk, the cache or logs, and it never appears in the response pane or in `--run` output.
+- mutations ask for confirmation before they run.
+- generates the query and its typed variables from the selected fields, and the same query can be printed from the command line with `--query` and `--select`.
+
+### Planned - NOT DONE YET
+
+- multiple server profiles, to switch between endpoints without changing flags or environment variables.
+- paste credentials inside the app and keep it in memory for the session only.
+- other forms of login besides the API key.
+- skip schema refetches when the server reports that its version has not changed.
+- keep the selected row centered while scrolling long lists and field trees.
+- copy&paste support for queries, variables and responses.
+- a position indicator (line count and percentage) when moving through long queries and responses.
+- better colors, a switch to turn them off, and themes you can configure.
+- export results to a file, with a download-like folder picker.
 
 ## Requirements
 
