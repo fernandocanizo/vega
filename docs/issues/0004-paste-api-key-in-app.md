@@ -1,6 +1,6 @@
 # Brainstorm: paste an API key into the app and keep it in memory
 
-Status: open (needs brainstorming)
+Status: doing
 
 ## Problem
 

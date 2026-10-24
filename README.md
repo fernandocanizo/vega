@@ -2,7 +2,7 @@
 
 Vega is a terminal GraphQL client for exploring a server's schema. It asks the server for its schema through introspection, caches it on disk, and lets you search and navigate operations and types without leaving the terminal.
 
-It is a general GraphQL tool: it works with any server that allows introspection and, optionally, authenticates with an API key sent in the `X-API-Key` header.
+It is a general GraphQL tool: it works with any server that allows introspection and, optionally, authenticates with an API key, a bearer token, basic authentication or custom HTTP headers (see [Authentication](docs/authentication.md)).
 
 ## What it does
 
@@ -21,7 +21,7 @@ Building, editing and running queries works; subscriptions can be built but not 
 - every feature is also available as a command line flag with `--json` output, so scripts and coding agents can search the schema, describe types and generate or run queries without a UI.
 - search operations and types by part of their name, then follow a field to its type to keep exploring, without opening a separate documentation panel.
 - keeps the schema cached on disk and tells you how old it is, so browsing and `--search` work instantly and offline after the first fetch.
-- credentials are read only from the environment: they are never written to disk, the cache or logs, and it never appears in the response pane or in `--run` output.
+- credentials are read only from the environment (API key, bearer token, basic authentication or any HTTP headers, see [Authentication](docs/authentication.md)): they are never written to disk, the cache or logs, and they never appear in the response pane or in `--run` output.
 - mutations ask for confirmation before they run.
 - generates the query and its typed variables from the selected fields, and the same query can be printed from the command line with `--query` and `--select`.
 
@@ -29,7 +29,7 @@ Building, editing and running queries works; subscriptions can be built but not 
 
 - multiple server profiles, to switch between endpoints without changing flags or environment variables.
 - paste credentials inside the app and keep it in memory for the session only.
-- other forms of login besides the API key.
+- interactive logins such as OAuth 2.0.
 - skip schema refetches when the server reports that its version has not changed.
 - keep the selected row centered while scrolling long lists and field trees.
 - copy&paste support for queries, variables and responses.
@@ -74,12 +74,14 @@ cp target/release/vega ~/.local/bin/    # or any directory in your PATH
 
 Settings are read in this order: command line flag, environment variable, then config file.
 
-| Setting      | Flag    | Environment variable | Config file          |
-| ------------ | ------- | -------------------- | -------------------- |
-| Endpoint URL | `--uri` | `VEGA_GRAPHQL_URI`   | `uri` in `config.toml` |
-| API key      | none    | `VEGA_GRAPHQL_KEY`   | not supported        |
+| Setting         | Flag           | Environment variable      | Config file            |
+| --------------- | -------------- | ------------------------- | ---------------------- |
+| Endpoint URL    | `--uri`        | `VEGA_GRAPHQL_URI`        | `uri` in `config.toml` |
+| API key         | none           | `VEGA_GRAPHQL_KEY`        | not supported          |
+| API key header  | `--key-header` | `VEGA_GRAPHQL_KEY_HEADER` | not supported          |
+| Other headers   | none           | `VEGA_GRAPHQL_HEADERS`    | not supported          |
 
-The API key is only read from the environment: it is never written to disk, the cache or logs, and there is deliberately no flag for it because command line arguments are visible to other users.
+Secrets have no flag on purpose, and `VEGA_GRAPHQL_HEADERS` holds one `Name: value` per line. See [Authentication](docs/authentication.md) for the recipes.
 
 Files follow the [XDG base directory specification](https://specifications.freedesktop.org/basedir/latest/):
 

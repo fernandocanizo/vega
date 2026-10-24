@@ -42,9 +42,9 @@ Motivations:
 ## Configuration and credentials
 
 - Precedence: CLI flags, then environment variables, then `config.toml`.
-- Environment variables: `VEGA_GRAPHQL_URI` (endpoint) and `VEGA_GRAPHQL_KEY` (API key).
-- The API key is sent as the `X-API-Key` header on a `POST` with `Content-Type: application/json`, as in `curl -X POST -H "Content-Type: application/json" -H "X-API-Key: $VEGA_GRAPHQL_KEY" -d @- "$VEGA_GRAPHQL_URI"`.
-- The API key is never written to disk, the cache, or logs.
+- Environment variables: `VEGA_GRAPHQL_URI` (endpoint), `VEGA_GRAPHQL_KEY` (API key), `VEGA_GRAPHQL_KEY_HEADER` (header that carries the key, default `X-API-Key`) and `VEGA_GRAPHQL_HEADERS` (other headers, one `Name: value` per line). See `docs/authentication.md`.
+- Requests are a `POST` with `Content-Type: application/json` and these headers, as in `curl -X POST -H "Content-Type: application/json" -H "X-API-Key: $VEGA_GRAPHQL_KEY" -d @- "$VEGA_GRAPHQL_URI"`.
+- Header values are never written to disk, the cache, or logs, and are masked in everything shown to the user.
 
 ## Architecture
 
