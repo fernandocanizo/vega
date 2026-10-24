@@ -15,6 +15,8 @@ Vega sends HTTP headers with every request. All the supported methods are ways t
 
 Command line arguments are visible to other users of the machine (`ps`, `/proc/<pid>/cmdline`) and end up in the shell history. Vega therefore reads every secret from the environment and has no flag for one. `--key-header` only names a header, which is not a secret.
 
+Vega never follows redirects, so your headers only ever go to the endpoint you chose and never to another origin a server points to.
+
 Vega never writes a header value to disk, the cache or logs, and masks every value (and, for values such as `Bearer abc`, the part after the space) in the Response pane, in `--run` output and in error messages.
 
 ## Variables
@@ -106,6 +108,7 @@ You do not need any environment variable to start vega. With no endpoint configu
 
 ## Troubleshooting
 
+- `server redirected the request (HTTP 301) to <url>`: the endpoint has moved. Vega does not follow redirects (a followed redirect would turn the POST into a GET and could send your credentials to another origin). Use the URL in the message as the endpoint.
 - `server answered HTTP 401` or `403`: the header name or value is wrong. Check which header the server expects.
 - `VEGA_GRAPHQL_HEADERS line N: expected `Name: value``: line N has no colon, an empty value or an invalid header name (names allow letters, digits and ``!#$%&'*+-.^_`|~``).
 - `the key header name is not valid`: fix `--key-header` or `VEGA_GRAPHQL_KEY_HEADER`.
