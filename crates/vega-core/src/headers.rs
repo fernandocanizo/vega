@@ -113,6 +113,10 @@ pub fn basic(user: &str, password: &str) -> Header {
 
 /// Replaces every secret in `text` with `***`. For a value such as `Bearer abc` both the
 /// whole value and its last word count as secrets, because a server may echo either.
+///
+/// When `text` is JSON, only string values are masked: keys, numbers, literals and
+/// layout stay byte for byte as they were, so a short secret cannot corrupt the document.
+/// Any other text is masked as plain text.
 pub fn mask(text: &str, headers: &[Header]) -> String {
     let mut secrets: Vec<&str> = headers
         .iter()
@@ -124,9 +128,57 @@ pub fn mask(text: &str, headers: &[Header]) -> String {
         .filter(|secret| !secret.is_empty())
         .collect();
     secrets.sort_by_key(|secret| Reverse(secret.len()));
+    if serde_json::from_str::<serde_json::Value>(text).is_ok() {
+        mask_json_values(text, &secrets)
+    } else {
+        mask_plain(text, &secrets)
+    }
+}
+
+fn mask_plain(text: &str, secrets: &[&str]) -> String {
     secrets
-        .into_iter()
+        .iter()
         .fold(text.to_string(), |text, secret| text.replace(secret, "***"))
+}
+
+/// Masks the string literals of valid JSON `text` that are values. A literal followed
+/// (after whitespace) by `:` is a key and is left alone. A masked literal is decoded,
+/// masked and encoded again, so the result is valid JSON whatever the secret holds.
+fn mask_json_values(text: &str, secrets: &[&str]) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'"' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < bytes.len() && bytes[i] != b'"' {
+            i += if bytes[i] == b'\\' { 2 } else { 1 };
+        }
+        let end = (i + 1).min(bytes.len());
+        i = end;
+        let is_key = text[end..].trim_start().starts_with(':');
+        if is_key {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<String>(&text[start..end]) else {
+            continue;
+        };
+        let masked = mask_plain(&value, secrets);
+        if masked != value {
+            if let Ok(encoded) = serde_json::to_string(&masked) {
+                out.push_str(&text[copied..start]);
+                out.push_str(&encoded);
+                copied = end;
+            }
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 #[cfg(test)]
@@ -230,6 +282,70 @@ mod tests {
         let headers = vec![h("X-Empty", "")];
         assert_eq!(mask("nothing to hide", &headers), "nothing to hide");
         assert_eq!(mask("no headers", &[]), "no headers");
+    }
+
+    fn assert_json(text: &str) {
+        assert!(
+            serde_json::from_str::<serde_json::Value>(text).is_ok(),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn mask_keeps_numbers_and_keys_when_the_secret_is_short() {
+        let headers = vec![h("X-Version", "1")];
+        let body = r#"{"count":12,"id":"x"}"#;
+        assert_eq!(mask(body, &headers), body);
+        assert_eq!(mask(r#"{"v":"1"}"#, &headers), r#"{"v":"***"}"#);
+        let headers = vec![h("X-Lang", "a")];
+        let body = r#"{"data":{"name":true,"n":null}}"#;
+        assert_eq!(mask(body, &headers), body);
+    }
+
+    #[test]
+    fn mask_hides_a_secret_echoed_as_a_json_value() {
+        let headers = vec![h("x-api-key", "k-secret")];
+        let out = mask(r#"{"headers":{"x-api-key":"k-secret"}}"#, &headers);
+        assert_eq!(out, r#"{"headers":{"x-api-key":"***"}}"#);
+        assert_json(&out);
+    }
+
+    #[test]
+    fn mask_never_touches_a_key_that_equals_the_secret() {
+        let headers = vec![h("X-A", "secret")];
+        let out = mask("{ \"secret\" : \"secret\" }", &headers);
+        assert_eq!(out, "{ \"secret\" : \"***\" }");
+        assert_json(&out);
+    }
+
+    #[test]
+    fn mask_handles_escaped_quotes_and_special_characters_in_values() {
+        let headers = vec![h("X-A", "tok\"en")];
+        let body = r#"{"a":"say \"hi\" tok\"en","b":"x"}"#;
+        let out = mask(body, &headers);
+        assert!(!out.contains("tok"), "{out}");
+        assert_eq!(out, r#"{"a":"say \"hi\" ***","b":"x"}"#);
+        assert_json(&out);
+        let headers = vec![h("X-B", "n")];
+        let out = mask(r#"{"a":"line\nbreak","k":"n"}"#, &headers);
+        assert_json(&out);
+        assert_eq!(out, r#"{"a":"li***e\nbreak","k":"***"}"#);
+    }
+
+    #[test]
+    fn mask_preserves_pretty_printing_and_key_order() {
+        let headers = vec![h("X-A", "abc")];
+        let body = "{\n  \"z\": \"abc\",\n  \"a\": [1, \"abc\"]\n}\n";
+        let out = mask(body, &headers);
+        assert_eq!(out, "{\n  \"z\": \"***\",\n  \"a\": [1, \"***\"]\n}\n");
+        assert_json(&out);
+    }
+
+    #[test]
+    fn mask_falls_back_to_plain_text_when_the_body_is_not_json() {
+        let headers = vec![h("X-A", "1")];
+        assert_eq!(mask(r#"{"count":12"#, &headers), r#"{"count":***2"#);
+        assert_eq!(mask("<p>1</p>", &headers), "<p>***</p>");
     }
 
     #[test]
