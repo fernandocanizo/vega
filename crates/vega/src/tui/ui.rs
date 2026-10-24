@@ -14,6 +14,23 @@ use vega_core::response::LineKind;
 use vega_core::selection::{NodeKind, Row};
 use vega_core::variables::{self, State};
 
+/// The color of whatever has the focus: the input box being typed in, the window border
+/// being navigated and the selected row. Nothing else uses it, so the eye goes where the
+/// keys go. It is the terminal's own magenta (purple in most palettes) until themes exist.
+pub const FOCUS: Color = Color::Magenta;
+
+/// The style of the selected row and of the input being edited. Reversed keeps the text
+/// readable on any terminal palette.
+fn focus_style() -> Style {
+    Style::default().fg(FOCUS).add_modifier(Modifier::REVERSED)
+}
+
+/// A modal (the connection modal or the help) has the input focus, so nothing behind it
+/// shows focus marks or the terminal cursor.
+fn overlay_open(app: &App) -> bool {
+    app.modal.is_some() || app.help_open
+}
+
 /// Version shown in the help modal title.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -192,7 +209,7 @@ fn draw_types(frame: &mut Frame, area: Rect, modal: &Modal) {
     }
     let list = List::new(items)
         .block(pane("Type", focused))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(focus_style());
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -253,7 +270,7 @@ fn field_text(field: &Field, focused: bool, width: usize) -> Line<'static> {
         };
     }
     if focused {
-        return Line::styled(text, Style::default().add_modifier(Modifier::REVERSED));
+        return Line::styled(text, focus_style());
     }
     Line::raw(text)
 }
@@ -275,12 +292,24 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App, now: u64) {
 }
 
 fn draw_search(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("Search (type to filter · Enter/→ open · Ctrl-Q quit · ? help)");
+    let block = pane(
+        "Search (type to filter · Enter/→ open · Ctrl-Q quit · ? help)",
+        !overlay_open(app),
+    );
     frame.render_widget(Paragraph::new(app.query.as_str()).block(block), area);
+    if let Some(position) = search_cursor(app, area) {
+        frame.set_cursor_position(position);
+    }
+}
+
+/// Where the terminal cursor goes in the search box. There is none while a modal has the
+/// input focus: a frame that sets no cursor leaves it hidden.
+fn search_cursor(app: &App, area: Rect) -> Option<(u16, u16)> {
+    if overlay_open(app) {
+        return None;
+    }
     let typed = u16::try_from(app.query.chars().count()).unwrap_or(u16::MAX);
-    frame.set_cursor_position((area.x.saturating_add(1).saturating_add(typed), area.y + 1));
+    Some((area.x.saturating_add(1).saturating_add(typed), area.y + 1))
 }
 
 fn draw_hits(frame: &mut Frame, area: Rect, app: &App) {
@@ -292,11 +321,9 @@ fn draw_hits(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!("Results ({})", app.hits.len()));
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let list = List::new(items).block(block).highlight_style(focus_style());
     let mut state = ListState::default();
-    if !app.hits.is_empty() {
+    if !app.hits.is_empty() && !overlay_open(app) {
         state.select(Some(app.hit_index));
     }
     frame.render_stateful_widget(list, area, &mut state);
@@ -318,16 +345,18 @@ fn split_column(area: Rect) -> [Rect; 2] {
 fn pane<'a>(title: &'a str, focused: bool) -> Block<'a> {
     let block = Block::default().borders(Borders::ALL).title(title);
     if focused {
-        block.border_style(Style::default().fg(Color::Cyan))
+        block.border_style(Style::default().fg(FOCUS))
     } else {
         block
     }
 }
 
 fn has_focus(app: &App, focus: Focus) -> bool {
-    app.design
-        .as_ref()
-        .is_some_and(|design| design.focus == focus)
+    !overlay_open(app)
+        && app
+            .design
+            .as_ref()
+            .is_some_and(|design| design.focus == focus)
 }
 
 /// The Details tree over the Description pane.
@@ -339,11 +368,9 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App, rows: &[Row], cursor: 
         frame.render_widget(Paragraph::new("No matches").block(block), parts[0]);
     } else {
         let items: Vec<ListItem> = rows.iter().map(|row| tree_item(app, row)).collect();
-        let list = List::new(items)
-            .block(block)
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let list = List::new(items).block(block).highlight_style(focus_style());
         let mut state = ListState::default();
-        state.select(cursor);
+        state.select(cursor.filter(|_| !overlay_open(app)));
         frame.render_stateful_widget(list, parts[0], &mut state);
     }
 
@@ -427,9 +454,7 @@ fn draw_query(frame: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(index, row)| variable_item(row, if index == cursor { edit } else { None }))
         .collect();
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let list = List::new(items).block(block).highlight_style(focus_style());
     let mut state = ListState::default();
     if has_focus(app, Focus::Variables) {
         state.select(Some(cursor));
@@ -572,6 +597,64 @@ mod tests {
         }
         assert!(text.contains("Ctrl-T"));
         assert!(text.contains("Esc"));
+    }
+
+    #[test]
+    fn the_search_cursor_is_hidden_while_a_modal_has_the_focus() {
+        let area = Rect::new(0, 1, 100, 3);
+        let mut app = app();
+        assert_eq!(search_cursor(&app, area), Some((1, 2)));
+        app.help_open = true;
+        assert_eq!(search_cursor(&app, area), None);
+
+        let empty = App::empty(empty_settings());
+        assert!(empty.modal.is_some());
+        assert_eq!(search_cursor(&empty, area), None);
+    }
+
+    #[test]
+    fn the_search_box_border_is_purple_only_while_it_has_the_focus() {
+        let border = |app: &App| render(app, 1_000).backend().buffer()[(0, 1)].fg;
+        let mut app = app();
+        assert_eq!(border(&app), FOCUS);
+        app.help_open = true;
+        assert_ne!(border(&app), FOCUS);
+
+        let empty = App::empty(empty_settings());
+        assert_ne!(border(&empty), FOCUS);
+    }
+
+    #[test]
+    fn the_selected_row_is_purple_and_reversed_until_a_modal_opens() {
+        let row = |app: &App| {
+            let terminal = render(app, 1_000);
+            let cell = terminal.backend().buffer()[(1, 5)].clone();
+            (cell.fg, cell.modifier.contains(Modifier::REVERSED))
+        };
+        let mut app = app();
+        assert_eq!(row(&app), (FOCUS, true));
+        app.help_open = true;
+        assert!(!row(&app).1);
+    }
+
+    #[test]
+    fn the_modal_marks_the_focused_pane_and_field_in_purple() {
+        let mut app = App::empty(empty_settings());
+        let terminal = render(&app, 0);
+        let buffer = terminal.backend().buffer();
+        // The URI box has the focus: some border cell and the input line are purple.
+        let purple = buffer.content().iter().filter(|cell| cell.fg == FOCUS);
+        assert!(purple.count() > 0, "nothing is purple");
+        let reversed = buffer
+            .content()
+            .iter()
+            .any(|cell| cell.fg == FOCUS && cell.modifier.contains(Modifier::REVERSED));
+        assert!(reversed, "the focused input is not highlighted");
+
+        // Moving the focus to the type list moves the purple border with it.
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let after = render(&app, 0);
+        assert_ne!(after.backend().buffer(), buffer);
     }
 
     #[test]

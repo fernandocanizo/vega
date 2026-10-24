@@ -35,6 +35,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 - No `unwrap`/`expect` in non-test code unless an invariant makes failure impossible.
 - Tests: unit tests inline in modules, integration tests in `crates/*/tests/`. Tests never use the real network (a local `127.0.0.1` listener is fine). Use the shared fixture.
 - TUI logic lives in `tui/app.rs` and `tui/connection.rs` as pure state machines (key in, state out) so it is testable without a terminal.
+- Focus is purple (`FOCUS` in `tui/ui.rs`, the terminal's magenta): the input being typed in, the border of the window being navigated and the selected row, and nothing else. While a modal (connection or help) is open nothing behind it shows focus and the terminal cursor is hidden, so attention goes where the keys go. This holds until themes exist (issue 0011).
 
 ## Commits
 
