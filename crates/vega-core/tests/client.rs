@@ -113,6 +113,20 @@ fn server_error_bodies_do_not_leak_the_api_key() {
     }
 }
 
+#[test]
+fn a_secret_crossing_the_cut_of_an_error_body_does_not_leak() {
+    let body = format!("{}secret-key-abcdefghij{}", "a".repeat(290), "b".repeat(50));
+    let (uri, _rx) = serve_once("500 Internal Server Error", body);
+    let err = fetch_introspection(&uri, &key("secret-key-abcdefghij")).unwrap_err();
+    match err {
+        ClientError::Status { body, .. } => {
+            assert!(body.contains("***"), "{body}");
+            assert!(!body.contains("secret"), "{body}");
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
 fn me_body() -> serde_json::Value {
     let variables = serde_json::from_str(r#"{"id":"1"}"#).unwrap();
     operation_body("Me", "query Me { me { id } }", &variables)

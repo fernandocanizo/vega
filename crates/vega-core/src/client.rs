@@ -135,11 +135,8 @@ pub fn fetch_introspection(
 ) -> Result<IntrospectionResponse, ClientError> {
     let (status, text, _elapsed) = post(uri, headers, &request_body())?;
     if !(200..300).contains(&status) {
-        let body: String = text.chars().take(300).collect();
-        return Err(ClientError::Status {
-            status,
-            body: headers::mask(&body, headers),
-        });
+        let body: String = headers::mask(&text, headers).chars().take(300).collect();
+        return Err(ClientError::Status { status, body });
     }
     parse_response(&text)
 }
