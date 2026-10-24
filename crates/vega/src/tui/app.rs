@@ -7,6 +7,7 @@ use vega_core::cache::{format_age, is_stale};
 use vega_core::client;
 use vega_core::config::Settings;
 use vega_core::export;
+use vega_core::import::{self, Imported};
 use vega_core::querygen::{self, GenerateError, GeneratedQuery, VariableDef};
 use vega_core::response::ResponseView;
 use vega_core::schema::{Root, Schema};
@@ -85,6 +86,7 @@ pub const BROWSE_KEYS: &[(&str, &str)] = &[
     ("PgUp / PgDn", "Move ten results"),
     ("Ctrl-Home / Ctrl-End", "Go to the first or last result"),
     ("Enter / →", "Open the highlighted item as a tree"),
+    ("Paste", "Import a query (GraphQL or a JSON request body)"),
     ("Ctrl-R", "Refresh the schema"),
     ("Ctrl-K", "Open the connection (endpoint and credentials)"),
     ("? / F1", "Show or hide this help"),
@@ -102,6 +104,7 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("Tab", "Move to the next pane"),
     ("Enter", "Edit the highlighted variable (Variables pane)"),
     ("Ctrl-C", "Copy the query as a JSON request body"),
+    ("Paste", "Import a query, replacing the current one"),
     ("r", "Run the query"),
     ("Esc", "Back to the results"),
     ("q / Ctrl-Q", "Quit"),
@@ -216,6 +219,8 @@ pub struct App {
     /// A one-key message shown in the status line; the next key clears it.
     notice: Option<String>,
     confirm: Option<PendingRun>,
+    /// A pasted query waiting for `y` because it would replace a selection.
+    pending_import: Option<Imported>,
     run_seq: u64,
     run_in_flight: bool,
 }
@@ -280,6 +285,7 @@ impl App {
             help_open: false,
             notice: None,
             confirm: None,
+            pending_import: None,
             run_seq: 0,
             run_in_flight: false,
         }
@@ -315,20 +321,29 @@ impl App {
     }
 
     /// Text pasted into the terminal (bracketed paste). It goes to the modal when it is
-    /// open, otherwise only into the search box or a text variable editor, so pasted
-    /// text can never act as command keys.
+    /// open. While composing or searching, a pasted query is imported; any other text
+    /// goes only into the search box or a text variable editor, so pasted text can never
+    /// act as command keys.
     pub fn handle_paste(&mut self, text: &str) {
         if let Some(modal) = self.modal.as_mut() {
             modal.paste(text);
             return;
         }
-        if self.help_open || self.confirm.is_some() {
+        if self.help_open || self.confirm.is_some() || self.pending_import.is_some() {
             return;
         }
         let in_text_editor = self
             .design
             .as_ref()
             .is_some_and(|design| matches!(design.edit, Some(Edit::Text(_))));
+        let composing = self
+            .design
+            .as_ref()
+            .is_none_or(|design| design.run.is_none());
+        if composing && !in_text_editor && import::looks_like_query(text) {
+            self.import_query(text);
+            return;
+        }
         let chars = text.chars().filter(|c| !c.is_control());
         if self.design.is_none() {
             self.notice = None;
@@ -370,6 +385,7 @@ impl App {
         self.design = None;
         self.sessions.clear();
         self.confirm = None;
+        self.pending_import = None;
         self.help_open = false;
         self.run_in_flight = false;
         self.run_seq += 1;
@@ -425,6 +441,12 @@ impl App {
                 KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('h' | '?')
             ) {
                 self.help_open = false;
+            }
+            return Action::None;
+        }
+        if let Some(found) = self.pending_import.take() {
+            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
+                self.apply_import(found);
             }
             return Action::None;
         }
@@ -696,7 +718,8 @@ impl App {
     /// of a request. Only while composing or in the Variables pane of Run mode; the
     /// response is not copied yet.
     fn copy_query(&mut self) -> Action {
-        if self.help_open || self.confirm.is_some() || self.is_editing() {
+        let busy = self.help_open || self.confirm.is_some() || self.pending_import.is_some();
+        if busy || self.is_editing() {
             return Action::None;
         }
         if self.focused(Focus::Response) {
@@ -719,6 +742,56 @@ impl App {
             n => format!("copied the query as JSON; {n} variables are unset or invalid, left out"),
         });
         Action::Copy(copy.text)
+    }
+
+    /// A pasted query: opens its design, asking first when that would replace a selection.
+    fn import_query(&mut self, text: &str) {
+        let found = match import::import(&self.schema, text) {
+            Ok(found) => found,
+            Err(problem) => {
+                self.notice = Some(format!("cannot import the pasted query: {problem}"));
+                return;
+            }
+        };
+        let key = TreeRoot::Operation(found.operation.clone()).key();
+        let replaces = self
+            .design
+            .as_ref()
+            .is_some_and(|design| !design.selection.is_empty())
+            || self
+                .sessions
+                .get(&key)
+                .is_some_and(|design| !design.selection.is_empty());
+        if replaces {
+            self.pending_import = Some(found);
+        } else {
+            self.apply_import(found);
+        }
+    }
+
+    /// Replaces the open design with the imported one, expanded down to what is selected.
+    fn apply_import(&mut self, found: Imported) {
+        let label = found.operation.label();
+        let root = TreeRoot::Operation(found.operation);
+        self.sessions.remove(&root.key());
+        let mut design = DesignState::new(root);
+        for path in found
+            .selection
+            .leaves()
+            .chain(found.selection.optional_args())
+        {
+            for end in 1..path.len() {
+                design.expanded.insert(path[..end].to_vec());
+            }
+        }
+        design.selection = found.selection;
+        design.values = found.values;
+        self.design = Some(design);
+        self.notice = Some(match found.discarded {
+            0 => format!("imported {label}"),
+            1 => format!("imported {label}; 1 item not in the schema was discarded"),
+            n => format!("imported {label}; {n} items not in the schema were discarded"),
+        });
     }
 
     fn notify(&mut self, message: &str) -> Action {
@@ -979,6 +1052,7 @@ impl App {
         self.fetched_at = fetched_at;
         self.design = None;
         self.confirm = None;
+        self.pending_import = None;
         self.sessions.clear();
         self.refresh = RefreshState::Idle;
         self.rerun_search();
@@ -1000,6 +1074,12 @@ impl App {
         if let Some(pending) = &self.confirm {
             return (
                 format!("Run mutation {}? y/N", pending.name),
+                StatusLevel::Notice,
+            );
+        }
+        if self.pending_import.is_some() {
+            return (
+                "Replace the current selection with the pasted query? y/N".to_string(),
                 StatusLevel::Notice,
             );
         }
@@ -2597,6 +2677,153 @@ mod tests {
     fn the_design_and_run_help_list_ctrl_c() {
         for keys in [DESIGN_KEYS, RUN_KEYS] {
             assert!(keys.iter().any(|(key, _)| *key == "Ctrl-C"));
+        }
+    }
+
+    #[test]
+    fn pasting_a_query_in_the_results_opens_its_design_as_if_built_by_hand() {
+        let mut app = design_app();
+        app.handle_paste("query   X { me { name id friends { name } } }");
+        assert!(app.design.is_some());
+        assert_eq!(
+            query_text(&app),
+            "query Me {\n  me {\n    id\n    name\n    friends {\n      name\n    }\n  }\n}"
+        );
+        assert_eq!(app.status(1_000).0, "imported Query.me");
+        assert!(app.query.is_empty());
+        let shown: Vec<String> = row_labels(&app);
+        assert!(shown.iter().any(|label| label.starts_with("friends")));
+        assert!(app.is_selected(&[
+            Seg::Field("friends".to_string()),
+            Seg::Field("name".to_string())
+        ]));
+    }
+
+    #[test]
+    fn a_pasted_json_body_fills_the_variables() {
+        let mut app = design_app();
+        app.handle_paste(
+            r#"{"query": "query Q($i: ID!) { node(id: $i) { id } }", "variables": {"i": "42"}}"#,
+        );
+        assert_eq!(app.variable_rows()[0].raw, "42");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        let request = run_request(press(&mut app, KeyCode::Char('r')));
+        assert_eq!(request.body["variables"], serde_json::json!({"id": "42"}));
+    }
+
+    #[test]
+    fn a_paste_that_is_not_a_query_still_goes_to_the_search_box() {
+        let mut app = design_app();
+        app.handle_paste("userread");
+        assert!(app.design.is_none());
+        assert_eq!(app.query, "userread");
+    }
+
+    #[test]
+    fn a_query_pasted_while_composing_replaces_the_design_in_any_pane() {
+        for panes in 0..3 {
+            let mut app = design_app();
+            open_me(&mut app);
+            for _ in 0..panes {
+                press(&mut app, KeyCode::Tab);
+            }
+            app.handle_paste("{ me { name } }");
+            assert_eq!(query_text(&app), "query Me {\n  me {\n    name\n  }\n}");
+        }
+    }
+
+    #[test]
+    fn replacing_a_selection_asks_first() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // id
+        app.handle_paste("{ me { name } }");
+        assert!(app
+            .status(1_000)
+            .0
+            .contains("Replace the current selection"));
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    id\n  }\n}");
+
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    id\n  }\n}");
+
+        app.handle_paste("{ me { name } }");
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    name\n  }\n}");
+    }
+
+    #[test]
+    fn a_saved_selection_of_the_same_operation_is_also_asked_about() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Esc); // back to the results, the session is kept
+        assert!(app.design.is_none());
+        app.handle_paste("{ me { name } }");
+        assert!(app.design.is_none());
+        assert!(app
+            .status(1_000)
+            .0
+            .contains("Replace the current selection"));
+    }
+
+    #[test]
+    fn an_empty_design_is_replaced_without_asking() {
+        let mut app = design_app();
+        open_me(&mut app);
+        app.handle_paste("{ me { name } }");
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    name\n  }\n}");
+    }
+
+    #[test]
+    fn a_pasted_query_the_schema_does_not_know_changes_nothing() {
+        let mut app = design_app();
+        app.handle_paste("{ nope { id } }");
+        assert!(app.design.is_none());
+        assert!(app
+            .status(1_000)
+            .0
+            .contains("none of the pasted root fields exist in the schema"));
+        assert!(app.query.is_empty());
+    }
+
+    #[test]
+    fn discarded_items_are_counted_in_the_notice() {
+        let mut app = design_app();
+        app.handle_paste("{ me { id nope other } }");
+        assert!(app
+            .status(1_000)
+            .0
+            .contains("imported Query.me; 2 items not in the schema were discarded"));
+    }
+
+    #[test]
+    fn a_query_is_not_imported_in_run_mode_or_into_a_text_editor() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        run_request(press(&mut app, KeyCode::Char('r')));
+        app.handle_paste("{ me { name } }");
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    id\n  }\n}");
+
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        app.handle_paste("{ me { name } }");
+        assert!(app.is_editing());
+        assert_eq!(app.query, "node"); // the search text is untouched
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.variable_rows()[0].raw, "{ me { name } }");
+    }
+
+    #[test]
+    fn the_browse_and_design_help_mention_pasting() {
+        for keys in [BROWSE_KEYS, DESIGN_KEYS] {
+            assert!(keys.iter().any(|(key, _)| *key == "Paste"));
         }
     }
 }

@@ -424,6 +424,11 @@ impl Selection {
     pub fn leaves(&self) -> impl Iterator<Item = &Path> {
         self.leaves.iter()
     }
+
+    /// The optional arguments that were opted in.
+    pub fn optional_args(&self) -> impl Iterator<Item = &Path> {
+        self.args.iter()
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
