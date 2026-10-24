@@ -72,9 +72,11 @@ pub fn resolve_settings_partial(
     auth: AuthInput,
     file: FileConfig,
 ) -> Result<Settings, ConfigError> {
-    let uri = non_empty(flag_uri)
-        .or_else(|| non_empty(env_uri))
-        .or_else(|| non_empty(file.uri))
+    let uri = [flag_uri, env_uri, file.uri]
+        .into_iter()
+        .flatten()
+        .map(|uri| uri.trim().to_string())
+        .find(|uri| !uri.is_empty())
         .unwrap_or_default();
     let mut headers = Vec::new();
     let mut key_only = false;
@@ -338,6 +340,18 @@ mod tests {
         let settings = resolve_settings(s(""), s("env"), key(""), FileConfig::default()).unwrap();
         assert_eq!(settings.uri, "env");
         assert!(settings.headers.is_empty());
+    }
+
+    #[test]
+    fn the_endpoint_is_trimmed_and_a_blank_one_counts_as_unset() {
+        let settings = resolve_settings(
+            s("  "),
+            s(" http://env/graphql \n"),
+            key(""),
+            FileConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(settings.uri, "http://env/graphql");
     }
 
     #[test]
