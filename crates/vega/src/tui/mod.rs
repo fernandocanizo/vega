@@ -15,9 +15,9 @@ use ratatui::{
     DefaultTerminal,
 };
 use vega_core::cache::{self, CacheEntry};
-use vega_core::client;
 use vega_core::config::Settings;
 use vega_core::response::{self, ResponseView};
+use vega_core::{client, headers};
 
 use crate::schema_source;
 use app::{Action, App, RunRequest};
@@ -91,17 +91,11 @@ fn event_loop(
 }
 
 /// Sends the request and summarizes the answer. A failure to get any HTTP answer comes
-/// back as text for the Response pane, with the API key masked.
+/// back as text for the Response pane, with every header value masked.
 fn run_request(settings: &Settings, request: &RunRequest) -> Result<ResponseView, String> {
-    client::execute(&settings.uri, settings.api_key.as_deref(), &request.body)
+    client::execute(&settings.uri, &settings.headers, &request.body)
         .map(|response| response::view(&response))
-        .map_err(|error| {
-            let message = error_chain(&error);
-            match settings.api_key.as_deref().filter(|key| !key.is_empty()) {
-                Some(key) => message.replace(key, "***"),
-                None => message,
-            }
-        })
+        .map_err(|error| headers::mask(&error_chain(&error), &settings.headers))
 }
 
 /// An error and its sources on one line: `request failed: error sending request: ...`.
@@ -137,11 +131,14 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use vega_core::headers::Header;
 
     fn settings(uri: &str, key: Option<&str>) -> Settings {
         Settings {
             uri: uri.to_string(),
-            api_key: key.map(str::to_string),
+            headers: key
+                .map(|key| vec![Header::new("X-API-Key", key).unwrap()])
+                .unwrap_or_default(),
         }
     }
 
