@@ -78,14 +78,6 @@ impl Field {
         self.label
     }
 
-    pub fn is_secret(&self) -> bool {
-        self.secret
-    }
-
-    pub fn is_revealed(&self) -> bool {
-        self.revealed
-    }
-
     /// What to draw: the text, or one bullet per character for a secret that is not
     /// revealed.
     pub fn display(&self) -> String {
@@ -475,7 +467,6 @@ mod tests {
         pick(&mut modal, AuthType::Bearer);
         type_text(&mut modal, "tok-123");
         assert_eq!(modal.fields()[0].display(), "•••••••");
-        assert!(!modal.fields()[0].is_revealed());
         ctrl(&mut modal, 't');
         assert_eq!(modal.fields()[0].display(), "tok-123");
         ctrl(&mut modal, 't');
@@ -489,7 +480,6 @@ mod tests {
         type_text(&mut modal, "alice");
         ctrl(&mut modal, 't');
         assert_eq!(modal.fields()[0].display(), "alice");
-        assert!(!modal.fields()[0].is_revealed());
     }
 
     #[test]
