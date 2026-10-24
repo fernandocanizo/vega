@@ -2,6 +2,7 @@
 //! and `ui`.
 
 pub mod app;
+pub mod clipboard;
 pub mod connection;
 pub mod ui;
 
@@ -119,6 +120,7 @@ fn event_loop(
                             _ => spawn_fetch(&app, cache_dir, load_seq, &tx),
                         }
                     }
+                    Action::Copy(text) => clipboard::copy(&text),
                     Action::Run(request) => {
                         let settings = app.settings().clone();
                         let tx = tx.clone();
