@@ -224,6 +224,14 @@ fn empty_schema() -> Schema {
     }
 }
 
+/// First visible row of a list that keeps the selection in the middle of a viewport
+/// `height` rows tall. The list is treated as one row longer than it is, so the last item
+/// can be centered no further than one empty line from the end.
+pub fn list_offset(len: usize, selected: usize, height: usize) -> usize {
+    let last = (len + 1).saturating_sub(height);
+    selected.saturating_sub(height / 2).min(last)
+}
+
 /// Stores the text typed for a variable; empty text clears it.
 fn set_value(design: &mut DesignState, path: &Path, raw: &str) {
     if raw.is_empty() {
@@ -1030,6 +1038,41 @@ mod tests {
         press(app, KeyCode::Tab); // the token field
         type_text(app, token);
         press(app, KeyCode::Enter)
+    }
+
+    #[test]
+    fn list_offset_keeps_the_selection_in_the_middle() {
+        // 100 items, 10 rows: the selection sits on the sixth row.
+        assert_eq!(list_offset(100, 50, 10), 45);
+        assert_eq!(list_offset(100, 51, 10), 46);
+    }
+
+    #[test]
+    fn list_offset_stops_one_empty_line_after_the_end() {
+        // The last item is the 99th row of 100; one blank row follows it.
+        assert_eq!(list_offset(100, 99, 10), 91);
+        assert_eq!(list_offset(100, 96, 10), 91);
+    }
+
+    #[test]
+    fn list_offset_stays_at_the_top_near_the_beginning() {
+        assert_eq!(list_offset(100, 0, 10), 0);
+        assert_eq!(list_offset(100, 5, 10), 0);
+        assert_eq!(list_offset(100, 6, 10), 1);
+    }
+
+    #[test]
+    fn list_offset_is_zero_when_the_list_fits() {
+        assert_eq!(list_offset(5, 4, 10), 0);
+        assert_eq!(list_offset(0, 0, 10), 0);
+        assert_eq!(list_offset(9, 8, 10), 0);
+    }
+
+    #[test]
+    fn list_offset_follows_a_resize() {
+        assert_eq!(list_offset(100, 50, 10), 45);
+        assert_eq!(list_offset(100, 50, 20), 40);
+        assert_eq!(list_offset(100, 99, 20), 81);
     }
 
     #[test]
