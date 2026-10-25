@@ -26,8 +26,8 @@ fn focus_style() -> Style {
     Style::default().fg(FOCUS).add_modifier(Modifier::REVERSED)
 }
 
-/// A modal (the connection modal, the profile picker or the help) has the input focus, so nothing behind it
-/// shows focus marks or the terminal cursor.
+/// A modal (the connection modal, the profile picker or the help) has the input focus, so
+/// nothing behind it shows focus marks or the terminal cursor.
 fn overlay_open(app: &App) -> bool {
     app.modal.is_some() || app.picker.is_some() || app.help_open
 }
@@ -202,6 +202,9 @@ fn draw_connection(frame: &mut Frame, area: Rect, modal: &Modal) {
     frame.render_widget(Paragraph::new(vec![footer, hint]), rows[3]);
 }
 
+/// The widest a profile name gets in the picker; longer names are clipped.
+const PICKER_NAME_WIDTH: usize = 20;
+
 fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker) {
     let width = area.width.min(76);
     let height = area.height.min(16);
@@ -225,16 +228,31 @@ fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker) {
     if picker.entries().is_empty() {
         lines.push(Line::raw("No saved servers. n to add one"));
     }
-    for (index, entry) in picker.entries().iter().enumerate() {
+    let name_width = picker
+        .entries()
+        .iter()
+        .map(|entry| entry.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(PICKER_NAME_WIDTH);
+    let height = usize::from(rows[0].height);
+    let offset = list_offset(picker.entries().len(), picker.selected(), height);
+    for (index, entry) in picker
+        .entries()
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(height)
+    {
         let mark = if picker.current() == Some(entry.name.as_str()) {
             "● "
         } else {
             "  "
         };
+        let name = clip(&entry.name, name_width);
         let text = clip(
             &format!(
-                "{mark}{}  {}  ({})",
-                entry.name,
+                "{mark}{name:<name_width$}  {}  ({})",
                 entry.uri,
                 entry.kind.as_str()
             ),
@@ -851,6 +869,50 @@ mod tests {
                 assert_ne!(buffer[(x, y)].fg, FOCUS, "focus mark at ({x}, {y})");
             }
         }
+    }
+
+    fn many_entries(count: usize) -> Vec<Entry> {
+        (0..count)
+            .map(|n| entry(&format!("srv{n:02}"), "https://x/graphql", Kind::NoAuth))
+            .collect()
+    }
+
+    #[test]
+    fn the_picker_scrolls_to_keep_the_selected_row_visible() {
+        let mut app = app();
+        app.open_picker(many_entries(30));
+        for _ in 0..29 {
+            key(&mut app, KeyCode::Down);
+        }
+        let text = screen(&render_sized(&app, 60, 20));
+        assert!(text.contains("srv29"), "{text}");
+        assert!(!text.contains("srv00"), "{text}");
+
+        let mut app = self::app();
+        app.open_picker(many_entries(30));
+        for _ in 0..14 {
+            key(&mut app, KeyCode::Down);
+        }
+        let text = screen(&render_sized(&app, 60, 20));
+        assert!(text.contains("srv14"), "{text}");
+    }
+
+    #[test]
+    fn the_picker_aligns_the_uri_column() {
+        let mut app = app();
+        app.open_picker(vec![
+            entry("a", "https://a/graphql", Kind::NoAuth),
+            entry("staging", "https://s/graphql", Kind::ApiKey),
+            entry("prod-eu", "https://p/graphql", Kind::Headers),
+        ]);
+        let rows = rows_of(&render_sized(&app, 80, 24));
+        let column = |name: &str| {
+            let row = rows.iter().find(|row| row.contains(name)).unwrap();
+            let byte = row.find("https://").unwrap();
+            row[..byte].chars().count()
+        };
+        assert_eq!(column("a/graphql"), column("s/graphql"));
+        assert_eq!(column("p/graphql"), column("s/graphql"));
     }
 
     #[test]
