@@ -139,7 +139,7 @@ fn start_tui(cli: &Cli, settings: Settings, cache_dir: PathBuf) -> anyhow::Resul
             }
         }
     };
-    tui::run(entry, settings, cache_dir)
+    tui::run(entry, settings, cache_dir, xdg::config_dir())
 }
 
 struct QueryArgs<'a> {

@@ -140,8 +140,8 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_connection(frame: &mut Frame, area: Rect, modal: &Modal) {
-    let width = area.width.min(76);
-    let height = area.height.min(20);
+    let width = area.width.min(86);
+    let height = area.height.min(23);
     let popup = Rect::new(
         area.x + (area.width - width) / 2,
         area.y + (area.height - height) / 2,
@@ -154,6 +154,7 @@ fn draw_connection(frame: &mut Frame, area: Rect, modal: &Modal) {
     frame.render_widget(block, popup);
 
     let rows = Layout::vertical([
+        Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Min(1),
         Constraint::Length(2),
@@ -171,7 +172,18 @@ fn draw_connection(frame: &mut Frame, area: Rect, modal: &Modal) {
         rows[0],
     );
 
-    let columns = Layout::horizontal([Constraint::Length(18), Constraint::Min(1)]).split(rows[1]);
+    let name_focused = modal.focus() == ModalFocus::Name;
+    frame.render_widget(
+        Paragraph::new(field_text(
+            modal.name(),
+            name_focused,
+            usize::from(rows[1].width.saturating_sub(2)),
+        ))
+        .block(pane("Save as (optional, Ctrl-S)", name_focused)),
+        rows[1],
+    );
+
+    let columns = Layout::horizontal([Constraint::Length(18), Constraint::Min(1)]).split(rows[2]);
     draw_types(frame, columns[0], modal);
     draw_form(frame, columns[1], modal);
 
@@ -180,10 +192,10 @@ fn draw_connection(frame: &mut Frame, area: Rect, modal: &Modal) {
         None => Line::raw(""),
     };
     let hint = Line::styled(
-        "Tab next · Enter connect · Esc cancel · Ctrl-T reveal · Ctrl-N add row",
+        "Tab next · Enter connect · Ctrl-S save · Esc cancel · Ctrl-T reveal · Ctrl-N add row",
         Style::default().fg(Color::DarkGray),
     );
-    frame.render_widget(Paragraph::new(vec![footer, hint]), rows[2]);
+    frame.render_widget(Paragraph::new(vec![footer, hint]), rows[3]);
 }
 
 fn draw_types(frame: &mut Frame, area: Rect, modal: &Modal) {
@@ -633,6 +645,15 @@ mod tests {
         }
         assert!(text.contains("Ctrl-T"));
         assert!(text.contains("Esc"));
+    }
+
+    #[test]
+    fn the_connection_modal_offers_save_as_and_ctrl_s() {
+        let mut app = app();
+        ctrl(&mut app, 'k');
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("Save as"), "{text}");
+        assert!(text.contains("Ctrl-S save"), "{text}");
     }
 
     #[test]
