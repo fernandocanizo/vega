@@ -24,6 +24,7 @@ Building, editing and running queries works; subscriptions can be built but not 
 - keeps the schema cached on disk and tells you how old it is, so browsing and `--search` work instantly and offline after the first fetch.
 - credentials come from the environment or from the connection modal (API key, bearer token, basic authentication or any HTTP headers, see [Authentication](docs/authentication.md)): they are never written to disk, the cache or logs, and they never appear in the response pane or in `--run` output.
 - starts with nothing configured: enter the endpoint and credentials in the connection modal, opened with Ctrl-K. What you type stays in memory for the session only.
+- saved server profiles: keep an endpoint and its credentials under a name (the secret goes to the OS keyring) and switch between them with Ctrl-P or `--profile`.
 - mutations ask for confirmation before they run.
 - Ctrl-A selects every field that needs no variable, three levels deep, and Alt-A also the fields that take required arguments and opts in every optional argument (they all become variables), to build a full query for testing; pressing it again clears the fields. It does not follow a field back into a type already above it, and stops at 1,000 fields, shallowest first; the status bar says when the limit was reached.
 - Ctrl-C copies the query as plain GraphQL, and Ctrl-J copies it with the variables you set as a JSON request body you can feed to `curl`, and Ctrl-C in the Response pane copies the response; pasting a query brings it in, keeping only what the schema knows, and shows it exactly as if you had selected the fields yourself.
@@ -31,7 +32,6 @@ Building, editing and running queries works; subscriptions can be built but not 
 
 ### Planned - NOT DONE YET
 
-- multiple server profiles, to switch between endpoints without changing flags or environment variables.
 - interactive logins such as OAuth 2.0.
 - skip schema refetches when the server reports that its version has not changed.
 - keep the selected row centered while scrolling long lists and field trees.
@@ -95,6 +95,16 @@ Example `config.toml`:
 ```toml
 uri = "https://example.com/graphql"
 ```
+
+## Profiles
+
+A profile is a named server: an endpoint plus its credentials. The endpoint and the authentication kind are stored in `config.toml`; the secret goes to the OS keyring, never to a file. Saving needs a keyring (Secret Service on Linux, such as GNOME Keyring or KWallet).
+
+- `Ctrl-P`: open the profile picker. `Enter` connects, `e` edits, `n` adds, `d` deletes (after `y`), `Esc` closes.
+- `Ctrl-S` in the connection modal (`Ctrl-K`): save the connection under the name typed in "Save as" and connect.
+- `--profile NAME` or `VEGA_PROFILE=NAME`: start with that profile, also for `--search`, `--describe`, `--query` and `--run`.
+
+See [Authentication](docs/authentication.md#saved-profiles) for the details.
 
 ## Usage
 

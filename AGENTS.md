@@ -27,6 +27,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 - `crates/vega-core`: library. Schema model, search, detail rendering, tree and selection model, query generation, variable typing, cache, config, HTTP client. No UI code.
 - `crates/vega`: binary. clap CLI and ratatui TUI, thin layers over `vega-core`.
 - `crates/vega-core/tests/fixtures/introspection.json`: shared schema fixture.
+- Saved profiles: the non-secret part in `[profiles.<name>]` of `config.toml`, the secret in the OS keyring (service `vega`, user = profile name). Only `vega-core::secrets` touches the keyring.
 
 ## Conventions
 
@@ -54,7 +55,7 @@ Design spec: `docs/superpowers/specs/2026-10-21-vega-design.md`. Plans: `docs/su
 
 ## Rules that must not be broken
 
-- Header values (the API key from `VEGA_GRAPHQL_KEY`, every header in `VEGA_GRAPHQL_HEADERS`, and what is typed in the connection modal) come only from the environment or the modal. Never write one to disk, the cache, logs or error messages, and never add a CLI flag for a value (a flag that names a header, such as `--key-header`, is fine). Modal values live in memory only. No header value appears in the Response pane or in `--run` output: the client masks them all. Requests never follow redirects: headers go only to the endpoint the user chose.
+- Header values (the API key from `VEGA_GRAPHQL_KEY`, every header in `VEGA_GRAPHQL_HEADERS`, what is typed in the connection modal, and what a saved profile holds) come only from the environment, the modal or the OS keyring. They are written only to the OS keyring, and only when the user saves a profile. Never write one to any file Vega writes, the cache or logs, or put one in an error message, and never add a CLI flag for a value (a flag that names a header, such as `--key-header`, is fine). Modal values live in memory until saved. No header value appears in the Response pane or in `--run` output: the client masks them all. Requests never follow redirects: headers go only to the endpoint the user chose.
 - Variable values live only in memory for the session: never write them to disk, the cache or logs.
 - Config and cache paths follow XDG (`$XDG_CONFIG_HOME/vega`, `$XDG_CACHE_HOME/vega`, `$XDG_DATA_HOME/vega`). Precedence: CLI flag, then environment, then `config.toml`.
 - CLI commands print warnings to stderr only. Stdout (including `--json`) must stay machine-readable.

@@ -23,7 +23,7 @@ If no keyring is reachable, Vega refuses to save and says why. Environment varia
 ```toml
 [profiles.staging]
 uri = "https://staging.example.com/graphql"
-kind = "api_key"          # or "headers"
+kind = "api_key"          # "none", "api_key" or "headers"
 key_header = "X-API-Key"  # api_key only; a header name is not a secret
 ```
 
@@ -37,7 +37,7 @@ key_header = "X-API-Key"  # api_key only; a header name is not a secret
 ## Startup and precedence
 
 - Profile selection: `--profile <name>`, then `VEGA_PROFILE`. There is no default profile in the config.
-- The profile supplies the URI and the credentials. The existing precedence still applies on top of it: `--uri` beats the profile's URI, and `VEGA_GRAPHQL_KEY`, `VEGA_GRAPHQL_KEY_HEADER` and `VEGA_GRAPHQL_HEADERS` beat the keyring secret.
+- The profile supplies the URI and the credentials. The existing precedence still applies on top of it: `--uri` beats the profile's URI, and environment credentials (`VEGA_GRAPHQL_KEY` or `VEGA_GRAPHQL_HEADERS`) replace the profile's credentials entirely, with no merge.
 - An unknown profile is an error that lists the known names. A keyring failure is an error that names the profile and offers the environment variables as the alternative. Neither prints a secret.
 - A profile whose keyring entry is missing connects with no headers, and the status says no stored credentials were found.
 - `--search`, `--describe`, `--query` and `--run` accept `--profile`. Warnings go to stderr only, stdout stays machine-readable, and `--run` output stays masked.
@@ -45,7 +45,7 @@ key_header = "X-API-Key"  # api_key only; a header name is not a secret
 
 ## Saving and deleting
 
-- Save order: the keyring first, then `config.toml` (written to a temporary file and renamed). If the keyring write fails, nothing is saved. If the config write fails after the keyring write, Vega removes the keyring entry again. If that also fails, the status says an orphan entry `vega/<name>` may remain.
+- Save order: the keyring first, then `config.toml` (written to a temporary file and renamed). If the keyring write fails, nothing is saved. If the config write fails after the keyring write, the keyring is put back as it was (the previous secret, or no entry). If that also fails, the status says an orphan entry `vega/<name>` may remain.
 - Delete removes the config entry and the keyring entry. A missing keyring entry is not an error.
 - An invalid name is rejected with the allowed characters in the message.
 
@@ -83,7 +83,7 @@ The header-value rule becomes: header values come from the environment, the moda
 - `tui/profiles.rs`: keys, delete confirm, empty state, no header value rendered.
 - Connection modal: `Ctrl-S` with and without a name, pre-fill on edit, and `Enter` still connects without saving.
 - `app.rs` and `ui.rs`: `Ctrl-P` routing, status bar text, help rows.
-- CLI integration: `--profile` and `VEGA_PROFILE` against a local `127.0.0.1` listener with the fake store; `--run` output stays masked.
+- CLI integration for the unknown-profile error and a blank profile name; connecting, saving and rollback are tested in `vega-core` with the fake store.
 - The real keyring is never used by `just check`. One `#[ignore]` test exercises it for manual runs.
 
 ## Deliverables
