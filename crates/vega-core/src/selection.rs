@@ -3,6 +3,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::querygen::is_composite;
 use crate::schema::{Field, FullType, Root, Schema, TypeKind};
 
 /// A type that has already appeared this many times on the way down is shown as
@@ -425,10 +426,108 @@ impl Selection {
         self.leaves.iter()
     }
 
+    /// True when every leaf of `other` is selected here too.
+    pub fn has_all_leaves_of(&self, other: &Selection) -> bool {
+        other.leaves.is_subset(&self.leaves)
+    }
+
+    /// Selects every leaf of `other`, keeping what was selected.
+    pub fn extend_leaves(&mut self, other: &Selection) {
+        self.leaves.extend(other.leaves.iter().cloned());
+    }
+
+    /// Unselects every leaf, keeping the opted-in optional arguments.
+    pub fn clear_leaves(&mut self) {
+        self.leaves.clear();
+    }
+
+    pub fn leaf_count(&self) -> usize {
+        self.leaves.len()
+    }
+
     /// The optional arguments that were opted in.
     pub fn optional_args(&self) -> impl Iterator<Item = &Path> {
         self.args.iter()
     }
+}
+
+/// Most leaves `select_all` selects; densely linked schemas have more paths than anyone
+/// could send in one query.
+pub const SELECT_ALL_LIMIT: usize = 1_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllLeaves {
+    pub selection: Selection,
+    /// The limit was reached: shallower fields come first, deeper ones were left out.
+    pub capped: bool,
+}
+
+/// Every leaf of an operation that can be reached without entering a type already on the
+/// path from the root (a field of `User` that leads back to `User` is skipped, siblings of
+/// the same type are not). Breadth first, so a cap cuts the deepest fields. Optional
+/// arguments are not touched; type trees and scalar operations have nothing to select.
+pub fn select_all(schema: &Schema, root: &TreeRoot) -> AllLeaves {
+    select_all_up_to(schema, root, SELECT_ALL_LIMIT)
+}
+
+/// A level of `select_all`: the path to a type, the type and the names above and at it.
+type Level<'a> = Vec<(Path, &'a FullType, Vec<&'a str>)>;
+
+/// Queues `inner` below `path` unless its type is already on the way down.
+fn queue<'a>(next: &mut Level<'a>, path: &[Seg], names: &[&'a str], seg: Seg, inner: &'a FullType) {
+    let Some(name) = inner.name.as_deref() else {
+        return;
+    };
+    if !names.contains(&name) {
+        next.push((join(path, seg), inner, [names, &[name]].concat()));
+    }
+}
+
+fn select_all_up_to(schema: &Schema, root: &TreeRoot, limit: usize) -> AllLeaves {
+    let mut out = AllLeaves {
+        selection: Selection::default(),
+        capped: false,
+    };
+    let (TreeRoot::Operation(_), Some(start)) = (root, root.start_type(schema)) else {
+        return out;
+    };
+    let Some(start_name) = start.name.as_deref() else {
+        return out;
+    };
+    let mut level: Vec<(Path, &FullType, Vec<&str>)> = vec![(Path::new(), start, vec![start_name])];
+    while !level.is_empty() {
+        let mut next = Level::new();
+        for (path, ty, names) in &level {
+            for field in ty.fields.iter().flatten() {
+                let target = field.ty.named().and_then(|name| schema.type_by_name(name));
+                match target {
+                    Some(inner) if is_composite(inner.kind) => queue(
+                        &mut next,
+                        path,
+                        names,
+                        Seg::Field(field.name.clone()),
+                        inner,
+                    ),
+                    _ => {
+                        if out.selection.leaf_count() >= limit {
+                            out.capped = true;
+                            return out;
+                        }
+                        out.selection
+                            .insert(join(path, Seg::Field(field.name.clone())));
+                    }
+                }
+            }
+            for possible in ty.possible_types.iter().flatten() {
+                let inner = possible.named().and_then(|name| schema.type_by_name(name));
+                if let (Some(name), Some(inner)) = (possible.named(), inner) {
+                    queue(&mut next, path, names, Seg::Branch(name.to_string()), inner);
+                }
+            }
+        }
+        level = next;
+    }
+    out
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -905,5 +1004,94 @@ mod tests {
             parse_select(&schema, &search, "arg:first.x"),
             Err(SelectError::Unknown("arg:first.x".to_string()))
         );
+    }
+
+    fn all(operation: &str) -> Vec<String> {
+        let schema = design_schema();
+        let root = root(&schema, operation);
+        let mut found: Vec<String> = select_all(&schema, &root)
+            .selection
+            .leaves()
+            .map(|path| {
+                path.iter()
+                    .map(|seg| match seg {
+                        Seg::Field(name) => name.clone(),
+                        Seg::Branch(name) => format!("on:{name}"),
+                        other => format!("{other:?}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(".")
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn select_all_skips_a_type_that_is_already_on_the_path() {
+        // `friends` and `author` lead back to User, which is already above them.
+        assert_eq!(
+            all("Query.me"),
+            [
+                "id",
+                "name",
+                "post.id",
+                "post.title",
+                "posts.id",
+                "posts.title",
+                "role"
+            ]
+        );
+    }
+
+    #[test]
+    fn select_all_keeps_siblings_of_the_same_type() {
+        let found = all("Query.me");
+        assert!(found.contains(&"post.title".to_string()));
+        assert!(found.contains(&"posts.title".to_string()));
+    }
+
+    #[test]
+    fn select_all_goes_through_every_branch_of_a_union() {
+        let found = all("Query.search");
+        assert!(found.contains(&"on:User.name".to_string()));
+        assert!(found.contains(&"on:User.posts.title".to_string()));
+        assert!(found.contains(&"on:Post.title".to_string()));
+        assert!(found.contains(&"on:Post.author.name".to_string()));
+        // Post is on the path already, so User's posts do not appear below its author.
+        assert!(!found.iter().any(|p| p.starts_with("on:Post.author.post")));
+    }
+
+    #[test]
+    fn select_all_has_nothing_for_scalar_operations_and_type_trees() {
+        assert!(all("Query.version").is_empty());
+        let schema = design_schema();
+        let found = select_all(&schema, &TreeRoot::Type("User".to_string()));
+        assert!(found.selection.is_empty());
+        assert!(!found.capped);
+    }
+
+    #[test]
+    fn select_all_generates_a_valid_query_without_optional_arguments() {
+        let schema = design_schema();
+        let root = root(&schema, "Query.me");
+        let all = select_all(&schema, &root);
+        let op = root.operation().unwrap();
+        let query = crate::querygen::generate(&schema, op, &all.selection).unwrap();
+        // Only the required arguments: `posts(first)` and `post(id)`.
+        assert_eq!(query.variables.len(), 2);
+        assert!(query.text.contains("posts(first: $first)"));
+        assert!(query.text.contains("post(id: $id)"));
+    }
+
+    #[test]
+    fn a_limit_keeps_the_shallowest_fields_and_says_it_was_reached() {
+        let schema = design_schema();
+        let root = root(&schema, "Query.me");
+        let found = select_all_up_to(&schema, &root, 3);
+        assert!(found.capped);
+        assert_eq!(found.selection.leaf_count(), 3);
+        assert!(found.selection.leaves().all(|path| path.len() == 1));
+        assert!(!select_all_up_to(&schema, &root, 7).capped);
     }
 }

@@ -101,6 +101,10 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("→", "Expand a node, or step into it"),
     ("←", "Collapse a node, or go to its parent"),
     ("Space", "Select or unselect a field"),
+    (
+        "Ctrl-A",
+        "Select every field of the operation (again to clear)",
+    ),
     ("Tab", "Move to the next pane"),
     ("Enter", "Edit the highlighted variable (Variables pane)"),
     ("Ctrl-C", "Copy the query as a GraphQL document"),
@@ -428,6 +432,7 @@ impl App {
                 KeyCode::Char('r') => self.request_refresh(),
                 KeyCode::Char('c') => self.copy_query(false),
                 KeyCode::Char('j') => self.copy_query(true),
+                KeyCode::Char('a') => self.toggle_select_all(),
                 KeyCode::Home => {
                     self.jump_to_end(false);
                     Action::None
@@ -759,6 +764,40 @@ impl App {
             n => format!("copied the query as JSON; {n} variables are unset or invalid, left out"),
         });
         Action::Copy(copy.text)
+    }
+
+    /// Ctrl-A in the Details pane: selects every field of the operation (see
+    /// `selection::select_all`), or clears the fields when all of them are selected
+    /// already.
+    fn toggle_select_all(&mut self) -> Action {
+        let busy = self.help_open || self.confirm.is_some() || self.pending_import.is_some();
+        let Some(design) = self.design.as_mut() else {
+            return Action::None;
+        };
+        if busy || design.edit.is_some() || design.run.is_some() {
+            return Action::None;
+        }
+        if design.read_only() || design.focus != Focus::Details {
+            return Action::None;
+        }
+        let all = selection::select_all(&self.schema, &design.root);
+        if all.selection.is_empty() {
+            return self.notify("nothing to select");
+        }
+        if design.selection.has_all_leaves_of(&all.selection) {
+            design.selection.clear_leaves();
+            return self.notify("cleared the selection");
+        }
+        design.selection.extend_leaves(&all.selection);
+        let count = design.selection.leaf_count();
+        self.notice = Some(if all.capped {
+            format!(
+                "selected {count} fields; the limit was reached, the deepest fields are left out"
+            )
+        } else {
+            format!("selected {count} fields")
+        });
+        Action::None
     }
 
     /// The response as the pane shows it (errors, then data), without the note about the
@@ -2977,5 +3016,96 @@ mod tests {
     fn ctrl_j_in_the_response_pane_does_nothing() {
         let mut app = ran_with_response(r#"{"data":{"me":{"id":"1"}}}"#);
         assert_eq!(ctrl(&mut app, 'j'), Action::None);
+    }
+
+    #[test]
+    fn ctrl_a_selects_every_field_and_a_second_press_clears_them() {
+        let mut app = design_app();
+        open_me(&mut app);
+        ctrl(&mut app, 'a');
+        assert_eq!(app.status(1_000).0, "selected 7 fields");
+        let text = query_text(&app);
+        for wanted in [
+            "id",
+            "name",
+            "role",
+            "posts(first: $first)",
+            "post(id: $id)",
+        ] {
+            assert!(text.contains(wanted), "{wanted} in {text}");
+        }
+        assert!(!text.contains("friends"), "{text}");
+
+        ctrl(&mut app, 'a');
+        assert_eq!(app.status(1_000).0, "cleared the selection");
+        assert!(matches!(
+            app.generated_query(),
+            Some(Err(vega_core::querygen::GenerateError::EmptySelection))
+        ));
+    }
+
+    #[test]
+    fn ctrl_a_completes_a_partial_selection_instead_of_clearing_it() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // id only
+        ctrl(&mut app, 'a');
+        assert_eq!(app.status(1_000).0, "selected 7 fields");
+    }
+
+    #[test]
+    fn ctrl_a_works_only_in_the_details_pane_of_an_operation() {
+        let mut app = design_app();
+        assert_eq!(ctrl(&mut app, 'a'), Action::None); // results list
+        assert!(app.design.is_none());
+
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Tab); // Query pane
+        ctrl(&mut app, 'a');
+        assert!(matches!(
+            app.generated_query(),
+            Some(Err(vega_core::querygen::GenerateError::EmptySelection))
+        ));
+
+        let mut app = design_app();
+        type_text(&mut app, "version");
+        press(&mut app, KeyCode::Enter); // a scalar operation: nothing to select
+        ctrl(&mut app, 'a');
+        assert_eq!(app.status(1_000).0, "nothing to select");
+    }
+
+    #[test]
+    fn ctrl_a_does_nothing_in_run_mode_or_while_editing() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.is_editing());
+        ctrl(&mut app, 'a');
+        assert!(app.is_editing());
+
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        run_request(press(&mut app, KeyCode::Char('r')));
+        ctrl(&mut app, 'a');
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    id\n  }\n}");
+    }
+
+    #[test]
+    fn the_design_help_lists_ctrl_a_and_space_still_toggles_one_field() {
+        assert!(DESIGN_KEYS.iter().any(|(key, _)| *key == "Ctrl-A"));
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    id\n  }\n}");
+        assert_eq!(
+            app.design.as_ref().unwrap().cursor,
+            1,
+            "Space does not move"
+        );
     }
 }
