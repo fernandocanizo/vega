@@ -1,6 +1,6 @@
 # Brainstorm: multiple server profiles
 
-Status: open (needs brainstorming)
+Status: done
 
 ## Problem
 
@@ -22,3 +22,7 @@ A short design note in `docs/` with a recommendation and the tradeoffs, then imp
 ## Out of scope
 
 - Implementation.
+
+## Resolution
+
+Designed in `docs/superpowers/specs/2026-10-24-profiles-design.md` and built following `docs/superpowers/plans/2026-10-24-profiles.md`.

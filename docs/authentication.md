@@ -17,7 +17,29 @@ Command line arguments are visible to other users of the machine (`ps`, `/proc/<
 
 Vega never follows redirects, so your headers only ever go to the endpoint you chose and never to another origin a server points to.
 
-Vega never writes a header value to disk, the cache or logs, and masks every value (and, for values such as `Bearer abc`, the part after the space) in the Response pane, in `--run` output and in error messages.
+Vega never writes a header value to a file, the cache or logs (the only place a secret is stored is the OS keyring, when you save a profile), and masks every value (and, for values such as `Bearer abc`, the part after the space) in the Response pane, in `--run` output and in error messages.
+
+## Saved profiles
+
+A profile saves an endpoint and its credentials under a name, so you do not retype them.
+
+- Where things go: `config.toml` holds the endpoint and the kind of authentication, and the secret goes to the OS keyring (service `vega`, user = the profile name). The secret is the raw key for an API key profile, or the `Name: value` lines for a custom headers profile. Basic and Bearer from the modal are saved as headers. No header name or value of a headers profile is written to a file.
+- Names: letters, digits, `-` and `_`.
+- Saving needs a keyring (Secret Service on Linux, for example GNOME Keyring or KWallet). Without one, saving fails with a message saying so and nothing is saved; the environment variables and flags keep working. A plaintext fallback is tracked in issue 0016.
+- Save from the TUI: `Ctrl-K`, fill the form, type a name in "Save as", press `Ctrl-S`. `Enter` still connects without saving. In the picker (`Ctrl-P`), `Enter` connects, `e` edits (the secret is read from the keyring and masked), `n` adds, `d` deletes after `y`, `Esc` closes.
+- Use from the command line: `--profile NAME` or `VEGA_PROFILE=NAME` (the flag wins). A blank name means no profile. An unknown name is an error that lists the saved ones.
+- `--uri` (or `VEGA_GRAPHQL_URI`) overrides the profile's endpoint, and the profile's credentials still apply.
+- Credentials from the environment (`VEGA_GRAPHQL_KEY` or `VEGA_GRAPHQL_HEADERS`) replace the profile's credentials entirely; they are not merged.
+- A profile whose keyring entry is missing connects with no headers and prints a warning on stderr.
+
+Example `config.toml`:
+
+```toml
+[profiles.staging]
+uri = "https://staging.example.com/graphql"
+kind = "api_key"          # "none", "api_key" or "headers"
+key_header = "X-API-Key"  # api_key only; a header name is not a secret
+```
 
 ## Variables
 
@@ -103,7 +125,7 @@ You do not need any environment variable to start vega. With no endpoint configu
 - Custom headers: `Ctrl-N` adds a row. A row with both fields empty is ignored.
 - The modal opens filled in from the environment: `VEGA_GRAPHQL_KEY` alone opens on API Key, `VEGA_GRAPHQL_HEADERS` opens on Custom headers (one row per header), nothing opens on None. Basic and Bearer values set through the environment are plain `Authorization` headers, so they appear as Custom headers rows.
 - Connecting with only new credentials keeps the schema, your query and its variables, and retries the schema load if it had failed. Changing the endpoint starts a new connection: the schema is loaded for it (from the cache when there is one) and the selection, query and variables are cleared.
-- Nothing you enter is saved. It lives in memory until you quit and is never written back to the environment, the cache or any file.
+- Nothing you enter is saved unless you press `Ctrl-S` to save a profile. Otherwise it lives in memory until you quit and is never written back to the environment, the cache or any file.
 - A server that rejects the schema request (a 401, for example) no longer stops vega from starting: the status bar shows the error, and `Ctrl-K` lets you fix the credentials.
 
 ## Troubleshooting
