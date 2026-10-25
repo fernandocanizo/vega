@@ -29,7 +29,7 @@ A recommendation with tradeoffs, then implementation issues. No code in this iss
 
 No editable query buffer. Copy and paste of whole queries, nothing else.
 
-- `Ctrl-C` copies the query as the JSON body of a GraphQL request, `{"query": ..., "variables": {...}}`, pretty-printed, so it can be fed to `curl -d @-`. Only variables that are set and valid are included, and no header ever is. It works while composing and with the Variables pane focused in Run mode. Copying the response waits for issue 0013.
+- `Ctrl-C` copies the query as a plain GraphQL document with real newlines. `Ctrl-J` copies the JSON body of a GraphQL request, `{"query": ..., "variables": {...}}`, pretty-printed, so it can be fed to `curl -d @-` (JSON cannot hold raw newlines in a string). Only variables that are set and valid are included, and no header ever is. It works while composing and with the Variables pane focused in Run mode. Copying the response waits for issue 0013.
 - The clipboard is written with OSC 52 only: it works over SSH and needs no clipboard crate. The README lists the terminals and the tmux setting.
 - There is no `Ctrl-V` handler: the terminal's own paste arrives as bracketed paste. While composing, and in the results list, a paste that is a JSON body or a GraphQL operation is imported; anything else behaves as before. In Run mode a paste only goes into the variable being edited.
 - Importing rebuilds the design from the schema: the first root field that exists is kept, what the schema does not know is discarded and counted, variables are matched by where they are used, and the query is regenerated, so it looks like one built by hand. A non-empty selection is replaced only after confirmation.
