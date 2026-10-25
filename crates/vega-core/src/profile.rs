@@ -52,6 +52,10 @@ pub enum ProfileError {
     InvalidName,
     #[error("no profile named `{name}` (saved: {known})")]
     Unknown { name: String, known: String },
+    #[error("the URI contains a username or password: remove it and use the credentials form")]
+    UriWithCredentials,
+    #[error("the URI is not a valid URL")]
+    InvalidUri,
     #[error("the stored credentials are not valid: save the profile again")]
     BadCredentials,
     #[error(transparent)]
@@ -65,6 +69,16 @@ pub enum ProfileError {
         name: String,
         source: Box<crate::config::ConfigError>,
     },
+}
+
+/// A saved URI is written to `config.toml` in the clear, so it must not carry
+/// credentials. Errors never echo the URI.
+fn validate_uri(uri: &str) -> Result<(), ProfileError> {
+    let url = reqwest::Url::parse(uri).map_err(|_| ProfileError::InvalidUri)?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ProfileError::UriWithCredentials);
+    }
+    Ok(())
 }
 
 /// Names are used as a TOML key and as the keyring user, so they stay plain.
@@ -185,6 +199,7 @@ pub fn save(
     settings: &Settings,
 ) -> Result<(), ProfileError> {
     validate_name(name)?;
+    validate_uri(&settings.uri)?;
     let (profile, secret) = Profile::from_settings(settings);
     let previous = store.get(name)?;
     match &secret {
@@ -426,6 +441,24 @@ mod tests {
         let connected = connect(&file, &store, "a").unwrap();
         assert!(connected.settings.headers.is_empty());
         assert!(connected.missing_credentials);
+    }
+
+    #[test]
+    fn a_uri_with_credentials_or_garbage_is_rejected_without_echoing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MemoryStore::default();
+        for (uri, expected) in [
+            ("https://user:pw-secret@x/graphql", "username or password"),
+            ("https://tok-secret@x/graphql", "username or password"),
+            ("not-a-url-secret", "not a valid URL"),
+        ] {
+            let mut bad = settings(vec![], false);
+            bad.uri = uri.to_string();
+            let error = save(dir.path(), &store, "a", &bad).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("secret"), "{error}");
+        }
+        assert!(!dir.path().join("config.toml").exists());
     }
 
     fn header(name: &str, value: &str) -> Header {
