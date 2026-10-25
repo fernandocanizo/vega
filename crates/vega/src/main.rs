@@ -17,6 +17,25 @@ use vega_core::{cache, client, describe, profile, querygen, response, search, xd
 
 use crate::cli::Cli;
 
+/// Something worth telling the user about the profile in use.
+#[derive(Clone, Copy)]
+enum ProfileWarning {
+    MissingCredentials,
+    CredentialsWithheld,
+}
+
+impl ProfileWarning {
+    /// `name` is printed as given, so the caller decides on any quoting.
+    fn message(self, name: &str) -> String {
+        match self {
+            Self::MissingCredentials => format!("no stored credentials found for profile {name}"),
+            Self::CredentialsWithheld => format!(
+                "credentials of profile {name} not sent: the endpoint differs from the profile's"
+            ),
+        }
+    }
+}
+
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
@@ -53,6 +72,7 @@ fn main() -> anyhow::Result<()> {
             .headers
             .as_deref()
             .is_some_and(|h| !h.trim().is_empty());
+    let mut warning = None;
     let connected = match &profile_name {
         Some(name) => {
             let connected =
@@ -62,7 +82,7 @@ fn main() -> anyhow::Result<()> {
                     )
                 })?;
             if connected.missing_credentials && !env_credentials {
-                eprintln!("warning: no stored credentials found for profile `{name}`");
+                warning = Some(ProfileWarning::MissingCredentials);
             }
             // The profile sits between the environment and the top-level `uri`.
             file_config.uri = None;
@@ -77,11 +97,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(connected) = connected {
         let merged = config::with_profile(settings, connected.settings, env_credentials);
         if merged.credentials_withheld {
-            if let Some(name) = &profile_name {
-                eprintln!(
-                    "warning: credentials of profile `{name}` not sent: the endpoint differs from the profile's"
-                );
-            }
+            warning = Some(ProfileWarning::CredentialsWithheld);
         }
         settings = merged.settings;
     }
@@ -92,7 +108,18 @@ fn main() -> anyhow::Result<()> {
     let cache_dir = xdg::cache_dir()
         .context("cannot locate the cache directory: set XDG_CACHE_HOME or HOME")?;
     if !one_shot {
-        return start_tui(&cli, settings, cache_dir);
+        let startup = tui::Startup {
+            notice: profile_name
+                .as_deref()
+                .zip(warning)
+                .map(|(name, warning)| warning.message(name)),
+            profile_name,
+        };
+        return start_tui(&cli, settings, cache_dir, startup);
+    }
+    // The terminal UI shows the warning itself; the one-shot commands print it.
+    if let Some((name, warning)) = profile_name.as_deref().zip(warning) {
+        eprintln!("warning: {}", warning.message(&format!("`{name}`")));
     }
     let cache_file = cache::cache_path(&cache_dir, &settings.uri);
     let entry = schema_source::load_or_fetch(&settings, &cache_file, cli.refresh)?;
@@ -136,7 +163,12 @@ fn main() -> anyhow::Result<()> {
 
 /// Starts the terminal UI. The schema is loaded inside it, in the background, so a
 /// missing endpoint or a failing server never stops it from opening.
-fn start_tui(cli: &Cli, settings: Settings, cache_dir: PathBuf) -> anyhow::Result<()> {
+fn start_tui(
+    cli: &Cli,
+    settings: Settings,
+    cache_dir: PathBuf,
+    startup: tui::Startup,
+) -> anyhow::Result<()> {
     let entry = if settings.uri.is_empty() || cli.refresh {
         None
     } else {
@@ -148,7 +180,7 @@ fn start_tui(cli: &Cli, settings: Settings, cache_dir: PathBuf) -> anyhow::Resul
             }
         }
     };
-    tui::run(entry, settings, cache_dir, xdg::config_dir())
+    tui::run(entry, settings, cache_dir, xdg::config_dir(), startup)
 }
 
 struct QueryArgs<'a> {

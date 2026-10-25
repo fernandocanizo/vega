@@ -341,6 +341,18 @@ impl App {
         self
     }
 
+    /// Names the profile the app starts on (shown in the status bar).
+    pub fn with_profile_name(mut self, name: Option<String>) -> Self {
+        self.profile_name = name;
+        self
+    }
+
+    /// A message shown until the first key press (used once, at startup).
+    pub fn with_notice(mut self, notice: Option<String>) -> Self {
+        self.notice = notice;
+        self
+    }
+
     /// An app with no schema yet. Without an endpoint it opens the connection modal.
     pub fn empty(settings: Settings) -> Self {
         let modal = settings.uri.is_empty().then(|| Modal::new(&settings));
@@ -1474,6 +1486,26 @@ mod tests {
         assert_eq!(action, Action::Load);
         assert!(app.picker.is_none());
         assert!(app.status(0).0.contains("a (other)"), "{}", app.status(0).0);
+    }
+
+    #[test]
+    fn an_app_started_on_a_profile_names_it_and_shows_the_startup_notice() {
+        let mut app = app()
+            .with_profile_name(Some("staging".to_string()))
+            .with_notice(Some(
+                "no stored credentials found for profile staging".into(),
+            ));
+        assert_eq!(
+            app.status(0).0,
+            "no stored credentials found for profile staging"
+        );
+        press(&mut app, KeyCode::Char('x'));
+        assert!(
+            app.status(0).0.contains("staging (nexus.example.com)"),
+            "{}",
+            app.status(0).0
+        );
+        assert!(!empty_app().status(0).0.contains("staging"));
     }
 
     #[test]
