@@ -256,8 +256,13 @@ fn edit_config(dir: &Path, change: impl FnOnce(&mut Table)) -> Result<(), Config
     change(profiles);
     fs::create_dir_all(dir).map_err(io_error)?;
     let temporary = dir.join("config.toml.tmp");
-    fs::write(&temporary, document.to_string()).map_err(io_error)?;
-    fs::rename(&temporary, &path).map_err(io_error)?;
+    let written =
+        fs::write(&temporary, document.to_string()).and_then(|()| fs::rename(&temporary, &path));
+    if let Err(e) = written {
+        // Leave no half-written temporary file behind.
+        let _ = fs::remove_file(&temporary);
+        return Err(io_error(e));
+    }
     Ok(())
 }
 
