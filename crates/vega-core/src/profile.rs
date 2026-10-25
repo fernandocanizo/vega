@@ -272,7 +272,9 @@ pub fn delete(dir: &Path, store: &dyn SecretStore, name: &str) -> Result<(), Pro
 /// Applies `change` to the `[profiles]` table and writes the file back through a
 /// temporary file, keeping comments and unrelated entries.
 fn edit_config(dir: &Path, change: impl FnOnce(&mut Table)) -> Result<(), ConfigError> {
-    let path = dir.join("config.toml");
+    // Write next to the real file when `config.toml` is a symlink (dotfile setups).
+    let link = dir.join("config.toml");
+    let path = fs::canonicalize(&link).unwrap_or(link);
     let io_error = |source: io::Error| ConfigError::Io {
         path: path.clone(),
         source,
@@ -299,9 +301,13 @@ fn edit_config(dir: &Path, change: impl FnOnce(&mut Table)) -> Result<(), Config
     profiles.set_implicit(true);
     change(profiles);
     fs::create_dir_all(dir).map_err(io_error)?;
-    let temporary = dir.join("config.toml.tmp");
-    let written =
-        fs::write(&temporary, document.to_string()).and_then(|()| fs::rename(&temporary, &path));
+    let temporary = path.with_file_name(format!("config.toml.{}.tmp", std::process::id()));
+    let written = fs::write(&temporary, document.to_string())
+        .and_then(|()| match fs::metadata(&path) {
+            Ok(existing) => fs::set_permissions(&temporary, existing.permissions()),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| fs::rename(&temporary, &path));
     if let Err(e) = written {
         // Leave no half-written temporary file behind.
         let _ = fs::remove_file(&temporary);
@@ -523,6 +529,41 @@ mod tests {
             connect_without_secret(&file, "nope"),
             Err(ProfileError::Unknown { .. })
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_through_a_symlinked_config_keeps_the_link() {
+        let real_dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let real = real_dir.path().join("dotfiles-config.toml");
+        std::fs::write(&real, "# mine\n").unwrap();
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let store = MemoryStore::default();
+        save(dir.path(), &store, "a", &settings(vec![], false)).unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let text = std::fs::read_to_string(&real).unwrap();
+        assert!(
+            text.contains("# mine") && text.contains("[profiles.a]"),
+            "{text}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_keeps_the_permissions_of_the_config() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = dir_with("");
+        let path = dir.path().join("config.toml");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let store = MemoryStore::default();
+        save(dir.path(), &store, "a", &settings(vec![], false)).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     fn header(name: &str, value: &str) -> Header {
