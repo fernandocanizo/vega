@@ -120,22 +120,60 @@ pub fn resolve_settings(
     Ok(settings)
 }
 
+/// The outcome of layering a profile under the flags and the environment.
+#[derive(Debug, PartialEq)]
+pub struct WithProfile {
+    pub settings: Settings,
+    /// The profile's credentials were left out because the endpoint in use is not the
+    /// profile's own.
+    pub credentials_withheld: bool,
+}
+
+/// Whether two URIs share scheme, host and port (default ports are normalized).
+fn same_origin(a: &str, b: &str) -> bool {
+    match (reqwest::Url::parse(a), reqwest::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin(),
+        _ => false,
+    }
+}
+
 /// Layers a saved profile under the flags and the environment: the profile's endpoint
-/// applies when no flag or variable names one, and its credentials apply unless the
-/// environment supplies credentials of its own (those replace them entirely).
-pub fn with_profile(settings: Settings, profile: Settings, env_credentials: bool) -> Settings {
+/// applies when no flag or variable names one. Its credentials apply only when the
+/// endpoint in use has the profile's origin, and the environment's credentials (those
+/// replace them entirely) are never affected.
+pub fn with_profile(settings: Settings, profile: Settings, env_credentials: bool) -> WithProfile {
     let uri = if settings.uri.is_empty() {
-        profile.uri
+        profile.uri.clone()
     } else {
         settings.uri
     };
     if env_credentials {
-        Settings { uri, ..settings }
+        return WithProfile {
+            settings: Settings {
+                uri,
+                headers: settings.headers,
+                key_only: settings.key_only,
+            },
+            credentials_withheld: false,
+        };
+    }
+    if same_origin(&uri, &profile.uri) {
+        WithProfile {
+            settings: Settings {
+                uri,
+                headers: profile.headers,
+                key_only: profile.key_only,
+            },
+            credentials_withheld: false,
+        }
     } else {
-        Settings {
-            uri,
-            headers: profile.headers,
-            key_only: profile.key_only,
+        WithProfile {
+            settings: Settings {
+                uri,
+                headers: Vec::new(),
+                key_only: false,
+            },
+            credentials_withheld: !profile.headers.is_empty(),
         }
     }
 }
@@ -416,22 +454,65 @@ mod tests {
             resolve_settings_partial(None, None, AuthInput::default(), FileConfig::default())
                 .unwrap();
         let profile = profile_settings(true, vec![header("X-Token", "k")]);
-        assert_eq!(with_profile(flags, profile.clone(), false), profile);
+        let merged = with_profile(flags, profile.clone(), false);
+        assert_eq!(merged.settings, profile);
+        assert!(!merged.credentials_withheld);
+    }
+
+    fn flag_uri(uri: &str) -> Settings {
+        resolve_settings_partial(s(uri), None, AuthInput::default(), FileConfig::default()).unwrap()
+    }
+
+    fn merged_with_flag(uri: &str, profile_uri: &str) -> WithProfile {
+        let mut profile = profile_settings(true, vec![header("X-Token", "k")]);
+        profile.uri = profile_uri.to_string();
+        with_profile(flag_uri(uri), profile, false)
     }
 
     #[test]
     fn the_uri_flag_beats_the_profile_endpoint() {
-        let flags = resolve_settings_partial(
-            s("https://flag/graphql"),
-            None,
-            AuthInput::default(),
-            FileConfig::default(),
-        )
-        .unwrap();
-        let profile = profile_settings(true, vec![header("X-Token", "k")]);
-        let merged = with_profile(flags, profile, false);
-        assert_eq!(merged.uri, "https://flag/graphql");
-        assert_eq!(merged.headers, vec![header("X-Token", "k")]);
+        let merged = merged_with_flag("https://p/other", "https://p/graphql");
+        assert_eq!(merged.settings.uri, "https://p/other");
+        assert_eq!(merged.settings.headers, vec![header("X-Token", "k")]);
+        assert!(merged.settings.key_only);
+        assert!(!merged.credentials_withheld);
+    }
+
+    #[test]
+    fn credentials_are_withheld_from_another_origin() {
+        for flag in [
+            "https://elsewhere/graphql",
+            "http://p/graphql",
+            "https://p:8443/graphql",
+            "not a uri",
+        ] {
+            let merged = merged_with_flag(flag, "https://p/graphql");
+            assert_eq!(merged.settings.uri, flag);
+            assert!(merged.settings.headers.is_empty(), "{flag}");
+            assert!(!merged.settings.key_only, "{flag}");
+            assert!(merged.credentials_withheld, "{flag}");
+        }
+    }
+
+    #[test]
+    fn default_ports_count_as_the_same_origin() {
+        let merged = merged_with_flag("https://p:443/x", "https://p/graphql");
+        assert_eq!(merged.settings.headers, vec![header("X-Token", "k")]);
+    }
+
+    #[test]
+    fn an_unparseable_profile_uri_withholds_the_credentials() {
+        let merged = merged_with_flag("https://p/graphql", "nonsense");
+        assert!(merged.settings.headers.is_empty());
+        assert!(merged.credentials_withheld);
+    }
+
+    #[test]
+    fn a_profile_without_credentials_withholds_nothing() {
+        let mut profile = profile_settings(false, vec![]);
+        profile.uri = "https://p/graphql".to_string();
+        let merged = with_profile(flag_uri("https://elsewhere/graphql"), profile, false);
+        assert!(!merged.credentials_withheld);
     }
 
     #[test]
@@ -445,9 +526,25 @@ mod tests {
         .unwrap();
         let profile = profile_settings(false, vec![header("Authorization", "Bearer p")]);
         let merged = with_profile(env.clone(), profile, true);
-        assert_eq!(merged.uri, "https://p/graphql");
-        assert_eq!(merged.headers, env.headers);
-        assert!(merged.key_only);
+        assert_eq!(merged.settings.uri, "https://p/graphql");
+        assert_eq!(merged.settings.headers, env.headers);
+        assert!(merged.settings.key_only);
+        assert!(!merged.credentials_withheld);
+    }
+
+    #[test]
+    fn environment_credentials_survive_another_endpoint() {
+        let env = resolve_settings_partial(
+            s("https://elsewhere/graphql"),
+            None,
+            auth(Some("env-key"), None, None),
+            FileConfig::default(),
+        )
+        .unwrap();
+        let profile = profile_settings(false, vec![header("Authorization", "Bearer p")]);
+        let merged = with_profile(env.clone(), profile, true);
+        assert_eq!(merged.settings, env);
+        assert!(!merged.credentials_withheld);
     }
 
     #[test]

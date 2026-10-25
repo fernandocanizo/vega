@@ -37,7 +37,7 @@ key_header = "X-API-Key"  # api_key only; a header name is not a secret
 ## Startup and precedence
 
 - Profile selection: `--profile <name>`, then `VEGA_PROFILE`. There is no default profile in the config.
-- The profile supplies the URI and the credentials. The existing precedence still applies on top of it: `--uri` beats the profile's URI, and environment credentials (`VEGA_GRAPHQL_KEY` or `VEGA_GRAPHQL_HEADERS`) replace the profile's credentials entirely, with no merge.
+- The profile supplies the URI and the credentials. The existing precedence still applies on top of it: `--uri` beats the profile's URI (the profile's credentials are then sent only if the new endpoint has the same origin as the profile's own, otherwise they are withheld with a warning), and environment credentials (`VEGA_GRAPHQL_KEY` or `VEGA_GRAPHQL_HEADERS`) replace the profile's credentials entirely, with no merge.
 - An unknown profile is an error that lists the known names. A keyring failure is an error that names the profile and offers the environment variables as the alternative. Neither prints a secret.
 - A profile whose keyring entry is missing connects with no headers, and the status says no stored credentials were found.
 - `--search`, `--describe`, `--query` and `--run` accept `--profile`. Warnings go to stderr only, stdout stays machine-readable, and `--run` output stays masked.

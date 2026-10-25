@@ -75,7 +75,15 @@ fn main() -> anyhow::Result<()> {
     let mut settings =
         config::resolve_settings_partial(cli.uri.clone(), env_uri, auth, file_config)?;
     if let Some(connected) = connected {
-        settings = config::with_profile(settings, connected.settings, env_credentials);
+        let merged = config::with_profile(settings, connected.settings, env_credentials);
+        if merged.credentials_withheld {
+            if let Some(name) = &profile_name {
+                eprintln!(
+                    "warning: credentials of profile `{name}` not sent: the endpoint differs from the profile's"
+                );
+            }
+        }
+        settings = merged.settings;
     }
     if one_shot && settings.uri.is_empty() {
         return Err(config::ConfigError::MissingUri.into());
