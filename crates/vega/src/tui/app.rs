@@ -29,6 +29,12 @@ pub enum Action {
     /// The endpoint changed: the event loop should load the schema for it, from the
     /// cache when there is one, otherwise from the server.
     Load,
+    /// Save this connection as a profile (keyring and `config.toml`); the loop answers
+    /// with `profile_saved` or `profile_save_failed`.
+    SaveProfile {
+        name: String,
+        settings: Settings,
+    },
 }
 
 /// A request ready to be sent; `seq` ties the result to it.
@@ -221,6 +227,8 @@ impl DesignState {
 pub struct App {
     schema: Schema,
     host: String,
+    /// The saved profile the connection came from, shown in the status bar.
+    profile_name: Option<String>,
     settings: Settings,
     /// The connection modal, when it is open.
     pub modal: Option<Modal>,
@@ -286,6 +294,7 @@ impl App {
         Self {
             schema,
             host: host_of(uri),
+            profile_name: None,
             settings: Settings {
                 uri: uri.to_string(),
                 headers: Vec::new(),
@@ -392,6 +401,28 @@ impl App {
         }
     }
 
+    /// The loop saved the profile: it becomes the current connection.
+    pub fn profile_saved(&mut self, name: String, settings: Settings) -> Action {
+        self.modal = None;
+        self.profile_name = Some(name);
+        self.apply_connection(settings)
+    }
+
+    /// The save failed: the modal stays open so the typed secret is not lost.
+    pub fn profile_save_failed(&mut self, message: String) {
+        if let Some(modal) = self.modal.as_mut() {
+            modal.set_error(message);
+        }
+    }
+
+    /// The server shown in the status bar: the profile name when there is one.
+    fn server_label(&self) -> String {
+        match &self.profile_name {
+            Some(name) => format!("{name} ({})", self.host),
+            None => self.host.clone(),
+        }
+    }
+
     /// A new endpoint: nothing of the old schema (selection, query, variables) applies.
     fn reset_connection(&mut self) {
         self.schema = empty_schema();
@@ -426,8 +457,10 @@ impl App {
                 }
                 Outcome::Submit(settings) => {
                     self.modal = None;
+                    self.profile_name = None;
                     self.apply_connection(settings)
                 }
+                Outcome::Save(name, settings) => Action::SaveProfile { name, settings },
             };
         }
         if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('a') {
@@ -1229,7 +1262,11 @@ impl App {
         } else {
             StatusLevel::Fresh
         };
-        let mut text = format!("{} · schema fetched {} ago", self.host, format_age(age));
+        let mut text = format!(
+            "{} · schema fetched {} ago",
+            self.server_label(),
+            format_age(age)
+        );
         match &self.refresh {
             RefreshState::Idle => text.push_str(" · Ctrl-R refresh · Ctrl-K connection"),
             RefreshState::Running => text.push_str(" · refreshing…"),
@@ -1258,17 +1295,17 @@ impl App {
             );
         }
         let text = match &self.refresh {
-            RefreshState::Running => format!("{} · loading the schema…", self.host),
+            RefreshState::Running => format!("{} · loading the schema…", self.server_label()),
             RefreshState::Failed(message) => {
                 let first_line = message.lines().next().unwrap_or("");
                 format!(
                     "{} · Ctrl-K connection · Ctrl-R retry · could not load the schema: {first_line}",
-                    self.host
+                    self.server_label()
                 )
             }
             _ => format!(
                 "{} · no schema loaded · Ctrl-K connection · Ctrl-R load",
-                self.host
+                self.server_label()
             ),
         };
         (text, StatusLevel::Notice)
@@ -1446,6 +1483,51 @@ mod tests {
     }
 
     #[test]
+    fn saving_from_the_modal_asks_the_loop_to_save_and_keeps_the_modal_open() {
+        let mut app = app();
+        ctrl(&mut app, 'k');
+        press(&mut app, KeyCode::BackTab);
+        type_text(&mut app, "staging");
+        let action = ctrl(&mut app, 's');
+        assert!(matches!(&action, Action::SaveProfile { name, .. } if name == "staging"));
+        assert!(app.modal.is_some());
+    }
+
+    #[test]
+    fn a_saved_profile_becomes_the_current_connection() {
+        let mut app = app();
+        ctrl(&mut app, 'k');
+        let settings = settings("https://other/graphql");
+        let action = app.profile_saved("staging".to_string(), settings.clone());
+        assert!(app.modal.is_none());
+        assert_eq!(app.settings(), &settings);
+        assert_eq!(action, Action::Load);
+        assert!(app.status(0).0.contains("staging"));
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_modal_and_shows_the_reason() {
+        let mut app = app();
+        ctrl(&mut app, 'k');
+        app.profile_save_failed("no keyring is available on this system".to_string());
+        assert!(app
+            .modal
+            .as_ref()
+            .unwrap()
+            .error()
+            .unwrap()
+            .contains("no keyring"));
+    }
+
+    #[test]
+    fn connecting_through_the_modal_forgets_the_profile_name() {
+        let mut app = app();
+        app.profile_saved("staging".to_string(), settings("https://x/graphql"));
+        submit_bearer(&mut app, "t");
+        assert!(!app.status(0).0.contains("staging"));
+    }
+
+    #[test]
     fn ctrl_k_opens_the_modal_and_esc_cancels_without_changes() {
         let mut app = app();
         ctrl(&mut app, 'k');
@@ -1506,7 +1588,8 @@ mod tests {
         let mut app = design_app();
         open_me(&mut app);
         ctrl(&mut app, 'k');
-        press(&mut app, KeyCode::BackTab); // from the type list to the URI
+        press(&mut app, KeyCode::BackTab); // from the type list to Save as
+        press(&mut app, KeyCode::BackTab); // and on to the URI
         type_text(&mut app, "/v2");
         assert_eq!(press(&mut app, KeyCode::Enter), Action::Load);
         assert_eq!(app.settings().uri, "https://example.com/graphql/v2");

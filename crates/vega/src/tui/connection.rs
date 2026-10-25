@@ -44,6 +44,8 @@ const CUSTOM: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Uri,
+    /// The optional profile name ("Save as").
+    Name,
     /// The list of authentication types.
     Types,
     /// A field of the selected type's form.
@@ -96,6 +98,8 @@ pub enum Outcome {
     Cancel,
     /// The user pressed Enter on a valid form.
     Submit(Settings),
+    /// Ctrl-S on a valid form with a valid name: connect and save as a profile.
+    Save(String, Settings),
 }
 
 /// A header name field followed by its value field, for Custom headers rows.
@@ -105,6 +109,7 @@ fn pair() -> [Field; 2] {
 
 pub struct Modal {
     uri: Field,
+    name: Field,
     /// Index into `AuthType::ALL`.
     selected: usize,
     focus: Focus,
@@ -159,11 +164,30 @@ impl Modal {
         };
         Self {
             uri: Field::new("URI", false).with_value(&settings.uri),
+            name: Field::new("Save as", false),
             selected,
             focus,
             forms,
             error: None,
         }
+    }
+
+    // Used by the profile picker; remove this allow when it is wired in.
+    #[allow(dead_code)]
+    /// The connection modal for editing a saved profile: its name is filled in.
+    pub fn for_profile(name: &str, settings: &Settings) -> Self {
+        let mut modal = Self::new(settings);
+        modal.name = Field::new("Save as", false).with_value(name);
+        modal
+    }
+
+    pub fn name(&self) -> &Field {
+        &self.name
+    }
+
+    /// A message from the event loop (a failed save); the modal stays open.
+    pub fn set_error(&mut self, message: String) {
+        self.error = Some(message);
     }
 
     pub fn uri(&self) -> &Field {
@@ -208,6 +232,7 @@ impl Modal {
                 }
             }
             KeyCode::Char('n') if ctrl => self.add_row(),
+            KeyCode::Char('s') if ctrl => return self.save(),
             KeyCode::Char(c) if !ctrl && !c.is_control() => self.insert(c.encode_utf8(&mut [0; 4])),
             _ => {}
         }
@@ -230,14 +255,15 @@ impl Modal {
     fn focused_mut(&mut self) -> Option<&mut Field> {
         match self.focus {
             Focus::Uri => Some(&mut self.uri),
+            Focus::Name => Some(&mut self.name),
             Focus::Types => None,
             Focus::Field(index) => self.forms[self.selected].get_mut(index),
         }
     }
 
-    /// Tab order: the URI, the type list, then the fields of the selected form.
+    /// Tab order: the URI, the profile name, the type list, then the fields of the selected form.
     fn cycle(&mut self, forward: bool) {
-        let mut order = vec![Focus::Uri, Focus::Types];
+        let mut order = vec![Focus::Uri, Focus::Name, Focus::Types];
         order.extend((0..self.forms[self.selected].len()).map(Focus::Field));
         let at = order.iter().position(|f| *f == self.focus).unwrap_or(0);
         let next = if forward {
@@ -262,6 +288,7 @@ impl Modal {
                     self.focus = Focus::Types;
                 }
             }
+            Focus::Name => self.focus = if down { Focus::Types } else { Focus::Uri },
             Focus::Field(index) => {
                 if !down {
                     self.focus = if index == 0 {
@@ -283,6 +310,23 @@ impl Modal {
         }
         self.forms[CUSTOM].extend(pair());
         self.focus = Focus::Field(self.forms[CUSTOM].len() - 2);
+    }
+
+    /// Ctrl-S: validate the name and the form, then ask to connect and save.
+    fn save(&mut self) -> Outcome {
+        let name = self.name.value.trim().to_string();
+        if vega_core::profile::validate_name(&name).is_err() {
+            self.error =
+                Some("Save as: name the profile with letters, digits, '-' or '_'".to_string());
+            return Outcome::Open;
+        }
+        match self.build() {
+            Ok(settings) => Outcome::Save(name, settings),
+            Err(message) => {
+                self.error = Some(message);
+                Outcome::Open
+            }
+        }
     }
 
     fn submit(&mut self) -> Outcome {
@@ -410,6 +454,7 @@ mod tests {
             Outcome::Submit(settings) => settings,
             Outcome::Open => panic!("still open"),
             Outcome::Cancel => panic!("cancelled"),
+            Outcome::Save(..) => panic!("saved"),
         }
     }
 
@@ -672,7 +717,9 @@ mod tests {
     #[test]
     fn tab_cycles_through_every_field_and_wraps() {
         let mut modal = Modal::new(&settings("", vec![], false));
-        pick(&mut modal, AuthType::Basic); // Tab from Uri goes to Types first
+        press(&mut modal, KeyCode::Tab); // Uri -> Save as
+        press(&mut modal, KeyCode::Tab); // Save as -> Types
+        pick(&mut modal, AuthType::Basic);
         assert_eq!(modal.focus(), Focus::Field(0));
         press(&mut modal, KeyCode::Tab);
         assert_eq!(modal.focus(), Focus::Field(1));
@@ -750,6 +797,57 @@ mod tests {
         let mut modal = modal();
         type_text(&mut modal, "abc");
         assert_eq!(modal.uri().display(), "https://x.example.com/graphql");
+    }
+
+    #[test]
+    fn ctrl_s_saves_under_the_typed_name() {
+        let start = settings("https://x/graphql", vec![header("X-API-Key", "k-1")], true);
+        let mut modal = Modal::new(&start);
+        press(&mut modal, KeyCode::BackTab); // Types -> Save as
+        assert_eq!(modal.focus(), Focus::Name);
+        type_text(&mut modal, "staging");
+        assert_eq!(
+            ctrl(&mut modal, 's'),
+            Outcome::Save("staging".to_string(), start)
+        );
+    }
+
+    #[test]
+    fn ctrl_s_without_a_valid_name_stays_open_with_a_message() {
+        let start = settings("https://x/graphql", vec![], false);
+        let mut modal = Modal::new(&start);
+        assert_eq!(ctrl(&mut modal, 's'), Outcome::Open);
+        assert!(modal.error().unwrap().contains("Save as"));
+        press(&mut modal, KeyCode::BackTab);
+        type_text(&mut modal, "bad name");
+        assert_eq!(ctrl(&mut modal, 's'), Outcome::Open);
+        assert!(modal.error().is_some());
+    }
+
+    #[test]
+    fn enter_still_connects_without_saving() {
+        let start = settings("https://x/graphql", vec![header("X-API-Key", "k")], true);
+        let mut modal = Modal::new(&start);
+        press(&mut modal, KeyCode::BackTab);
+        type_text(&mut modal, "staging");
+        assert_eq!(submitted(press(&mut modal, KeyCode::Enter)), start);
+    }
+
+    #[test]
+    fn tab_visits_the_save_as_field_between_the_uri_and_the_types() {
+        let mut modal = Modal::new(&settings("", vec![], false)); // starts on the URI
+        assert_eq!(modal.focus(), Focus::Uri);
+        press(&mut modal, KeyCode::Tab);
+        assert_eq!(modal.focus(), Focus::Name);
+        press(&mut modal, KeyCode::Tab);
+        assert_eq!(modal.focus(), Focus::Types);
+    }
+
+    #[test]
+    fn editing_a_profile_opens_with_its_name_filled_in() {
+        let start = settings("https://x/graphql", vec![], false);
+        let modal = Modal::for_profile("staging", &start);
+        assert_eq!(modal.name().display(), "staging");
     }
 
     #[test]

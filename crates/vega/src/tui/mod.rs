@@ -23,7 +23,8 @@ use ratatui::{
 use vega_core::cache::{self, CacheEntry};
 use vega_core::config::Settings;
 use vega_core::response::{self, ResponseView};
-use vega_core::{client, headers};
+use vega_core::secrets::KeyringStore;
+use vega_core::{client, headers, profile};
 
 use crate::schema_source;
 use app::{Action, App, RunRequest};
@@ -50,6 +51,7 @@ pub fn run(
     entry: Option<CacheEntry>,
     settings: Settings,
     cache_dir: PathBuf,
+    config_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let app = match entry {
         Some(entry) => App::new(entry.response.data.schema, &settings.uri, entry.fetched_at)
@@ -63,7 +65,7 @@ pub fn run(
         let _ = execute!(std::io::stdout(), DisableBracketedPaste);
         previous_hook(info);
     }));
-    let result = event_loop(&mut terminal, app, &cache_dir);
+    let result = event_loop(&mut terminal, app, &cache_dir, config_dir.as_deref());
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
@@ -73,14 +75,20 @@ fn event_loop(
     terminal: &mut DefaultTerminal,
     mut app: App,
     cache_dir: &Path,
+    config_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel::<Update>();
-    let mut load_seq: u64 = 0;
+    let mut ctx = Ctx {
+        cache_dir,
+        config_dir,
+        load_seq: 0,
+        tx,
+    };
 
     if !app.is_loaded() && !app.settings().uri.is_empty() {
         app.begin_load();
-        load_seq += 1;
-        spawn_fetch(&app, cache_dir, load_seq, &tx);
+        ctx.load_seq += 1;
+        spawn_fetch(&app, cache_dir, ctx.load_seq, &ctx.tx);
     }
 
     while !app.should_quit {
@@ -93,7 +101,7 @@ fn event_loop(
                     cache_file,
                     result,
                 } => {
-                    if seq == load_seq {
+                    if seq == ctx.load_seq {
                         apply_fetch(&mut app, &cache_file, result);
                     }
                 }
@@ -104,41 +112,76 @@ fn event_loop(
         // Short poll so the status bar age keeps ticking and results show up.
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => match app.handle_key(key) {
-                    Action::None => {}
-                    Action::Refresh => {
-                        load_seq += 1;
-                        spawn_fetch(&app, cache_dir, load_seq, &tx);
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    let mut action = app.handle_key(key);
+                    while let Some(next) = dispatch(&mut app, action, &mut ctx) {
+                        action = next;
                     }
-                    Action::Load => {
-                        load_seq += 1;
-                        let cache_file = cache::cache_path(cache_dir, &app.settings().uri);
-                        match cache::load(&cache_file) {
-                            Ok(Some(entry)) => {
-                                app.apply_refresh_ok(entry.response.data.schema, entry.fetched_at)
-                            }
-                            _ => spawn_fetch(&app, cache_dir, load_seq, &tx),
-                        }
-                    }
-                    Action::Copy(text) => clipboard::copy(&text),
-                    Action::Run(request) => {
-                        let settings = app.settings().clone();
-                        let tx = tx.clone();
-                        thread::spawn(move || {
-                            let outcome = run_request(&settings, &request);
-                            let _ = tx.send(Update::Run {
-                                seq: request.seq,
-                                outcome,
-                            });
-                        });
-                    }
-                },
+                }
                 Event::Paste(text) => app.handle_paste(&text),
                 _ => {}
             }
         }
     }
     Ok(())
+}
+
+/// What `dispatch` needs besides the app: directories, the load counter and the channel
+/// background threads answer on.
+struct Ctx<'a> {
+    cache_dir: &'a Path,
+    config_dir: Option<&'a Path>,
+    load_seq: u64,
+    tx: mpsc::Sender<Update>,
+}
+
+/// Performs one action. An action whose outcome the app must hear about returns the
+/// follow-up action the app asks for.
+fn dispatch(app: &mut App, action: Action, ctx: &mut Ctx) -> Option<Action> {
+    match action {
+        Action::None => {}
+        Action::Refresh => {
+            ctx.load_seq += 1;
+            spawn_fetch(app, ctx.cache_dir, ctx.load_seq, &ctx.tx);
+        }
+        Action::Load => {
+            ctx.load_seq += 1;
+            let cache_file = cache::cache_path(ctx.cache_dir, &app.settings().uri);
+            match cache::load(&cache_file) {
+                Ok(Some(entry)) => {
+                    app.apply_refresh_ok(entry.response.data.schema, entry.fetched_at)
+                }
+                _ => spawn_fetch(app, ctx.cache_dir, ctx.load_seq, &ctx.tx),
+            }
+        }
+        Action::Copy(text) => clipboard::copy(&text),
+        Action::Run(request) => {
+            let settings = app.settings().clone();
+            let tx = ctx.tx.clone();
+            thread::spawn(move || {
+                let outcome = run_request(&settings, &request);
+                let _ = tx.send(Update::Run {
+                    seq: request.seq,
+                    outcome,
+                });
+            });
+        }
+        Action::SaveProfile { name, settings } => {
+            let result = match ctx.config_dir {
+                Some(dir) => {
+                    profile::save(dir, &KeyringStore, &name, &settings).map_err(|e| e.to_string())
+                }
+                None => Err(
+                    "cannot locate the config directory: set XDG_CONFIG_HOME or HOME".to_string(),
+                ),
+            };
+            match result {
+                Ok(()) => return Some(app.profile_saved(name, settings)),
+                Err(message) => app.profile_save_failed(message),
+            }
+        }
+    }
+    None
 }
 
 /// Fetches the schema of the app's current endpoint on a background thread.
