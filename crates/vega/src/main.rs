@@ -30,6 +30,7 @@ fn main() -> anyhow::Result<()> {
         .profile
         .clone()
         .or_else(|| env_var("VEGA_PROFILE"))
+        .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty());
     let has_endpoint = [cli.uri.as_deref(), env_uri.as_deref()]
         .into_iter()
@@ -38,23 +39,6 @@ fn main() -> anyhow::Result<()> {
     let mut file_config = match xdg::config_dir() {
         Some(dir) if profile_name.is_some() || !has_endpoint => config::load_file_config(&dir)?,
         _ => FileConfig::default(),
-    };
-    let connected = match &profile_name {
-        Some(name) => {
-            let connected =
-                profile::connect(&file_config, &KeyringStore, name).with_context(|| {
-                    format!(
-                        "cannot use profile `{name}` (VEGA_GRAPHQL_URI and VEGA_GRAPHQL_KEY work without the keyring)"
-                    )
-                })?;
-            if connected.missing_credentials {
-                eprintln!("warning: no stored credentials found for profile `{name}`");
-            }
-            // The profile sits between the environment and the top-level `uri`.
-            file_config.uri = None;
-            Some(connected)
-        }
-        None => None,
     };
     let auth = AuthInput {
         key: env_var("VEGA_GRAPHQL_KEY"),
@@ -69,6 +53,23 @@ fn main() -> anyhow::Result<()> {
             .headers
             .as_deref()
             .is_some_and(|h| !h.trim().is_empty());
+    let connected = match &profile_name {
+        Some(name) => {
+            let connected =
+                profile::connect(&file_config, &KeyringStore, name).with_context(|| {
+                    format!(
+                        "cannot use profile `{name}` (VEGA_GRAPHQL_URI and VEGA_GRAPHQL_KEY work without the keyring)"
+                    )
+                })?;
+            if connected.missing_credentials && !env_credentials {
+                eprintln!("warning: no stored credentials found for profile `{name}`");
+            }
+            // The profile sits between the environment and the top-level `uri`.
+            file_config.uri = None;
+            Some(connected)
+        }
+        None => None,
+    };
     // The terminal UI can start with no endpoint (it opens the connection modal); the
     // one-shot commands cannot.
     let mut settings =

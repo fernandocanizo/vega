@@ -252,6 +252,24 @@ fn an_unknown_profile_is_an_error_that_lists_the_saved_ones() {
 }
 
 #[test]
+fn a_blank_profile_name_means_no_profile() {
+    let cache = seeded_cache(60);
+    let out = Command::new(env!("CARGO_BIN_EXE_vega"))
+        .args(["--profile", "  ", "--uri", URI, "--search", "user"])
+        .env("XDG_CACHE_HOME", cache.path())
+        .env("XDG_CONFIG_HOME", cache.path().join("config"))
+        .env_remove("VEGA_GRAPHQL_URI")
+        .env_remove("VEGA_GRAPHQL_KEY")
+        .env_remove("VEGA_GRAPHQL_HEADERS")
+        .env("VEGA_PROFILE", " ")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("profile"), "{}", stderr(&out));
+}
+
+#[test]
 fn the_prefixed_endpoint_variable_is_read() {
     let cache = seeded_cache(60);
     let out = Command::new(env!("CARGO_BIN_EXE_vega"))
