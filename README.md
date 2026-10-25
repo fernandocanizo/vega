@@ -25,7 +25,7 @@ Building, editing and running queries works; subscriptions can be built but not 
 - credentials come from the environment or from the connection modal (API key, bearer token, basic authentication or any HTTP headers, see [Authentication](docs/authentication.md)): they are never written to disk, the cache or logs, and they never appear in the response pane or in `--run` output.
 - starts with nothing configured: enter the endpoint and credentials in the connection modal, opened with Ctrl-K. What you type stays in memory for the session only.
 - mutations ask for confirmation before they run.
-- Ctrl-C copies the query as plain GraphQL, and Ctrl-J copies it with the variables you set as a JSON request body you can feed to `curl`; pasting a query brings it in, keeping only what the schema knows, and shows it exactly as if you had selected the fields yourself.
+- Ctrl-C copies the query as plain GraphQL, and Ctrl-J copies it with the variables you set as a JSON request body you can feed to `curl`, and Ctrl-C in the Response pane copies the response; pasting a query brings it in, keeping only what the schema knows, and shows it exactly as if you had selected the fields yourself.
 - generates the query and its typed variables from the selected fields, and the same query can be printed from the command line with `--query` and `--select`.
 
 ### Planned - NOT DONE YET
@@ -34,7 +34,6 @@ Building, editing and running queries works; subscriptions can be built but not 
 - interactive logins such as OAuth 2.0.
 - skip schema refetches when the server reports that its version has not changed.
 - keep the selected row centered while scrolling long lists and field trees.
-- copy the response to the clipboard.
 - a position indicator (line count and percentage) when moving through long queries and responses.
 - better colors, a switch to turn them off, and themes you can configure.
 - export results to a file, with a download-like folder picker.
@@ -127,7 +126,7 @@ The first run fetches the schema; later runs use the cache. The cache age is sho
 }
 ```
 
-Paste it into a file and send it with `curl -H 'Content-Type: application/json' -H "X-API-Key: $VEGA_GRAPHQL_KEY" -d @body.json "$VEGA_GRAPHQL_URI"`. Headers are never part of either copy. In the JSON copy, variables that are unset or invalid are left out, and the status bar says how many; the plain copy has no variables.
+Paste it into a file and send it with `curl -H 'Content-Type: application/json' -H "X-API-Key: $VEGA_GRAPHQL_KEY" -d @body.json "$VEGA_GRAPHQL_URI"`. With the Response pane focused (after running a query), `Ctrl-C` copies the response as the pane shows it: the errors first, then the data. A response over 10,000 lines is copied capped, and the status bar says so. Headers are never part of any copy. In the JSON copy, variables that are unset or invalid are left out, and the status bar says how many; the plain copy has no variables.
 
 To bring a query in, paste it with your terminal's paste (usually `Ctrl-Shift-V`, or a middle click) while you are composing a query or looking at the results. It can be a bare GraphQL operation or a JSON body with `query`, `variables` and `operationName`. Vega keeps only what the schema knows, fills the variables by where they are used, and regenerates the query, so it looks like one you built by selecting fields. The first root field that exists in the schema is used, aliases and directives are dropped, and the status bar counts what was discarded. If it would replace a selection, Vega asks first. Anything that is not a query keeps going to the search box, or into the variable you are editing.
 

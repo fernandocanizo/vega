@@ -9,7 +9,7 @@ use vega_core::config::Settings;
 use vega_core::export;
 use vega_core::import::{self, Imported};
 use vega_core::querygen::{self, GenerateError, GeneratedQuery, VariableDef};
-use vega_core::response::ResponseView;
+use vega_core::response::{LineKind, ResponseView};
 use vega_core::schema::{Root, Schema};
 use vega_core::search::{self, Hit};
 use vega_core::selection::{self, Path, Row, Seg, Selection, TreeRoot};
@@ -128,7 +128,7 @@ pub const RUN_KEYS: &[(&str, &str)] = &[
     ("Enter", "Edit the highlighted variable (Variables pane)"),
     (
         "Ctrl-C",
-        "Copy the query as a GraphQL document (Variables pane)",
+        "Copy the response (Response pane) or the query as GraphQL (Variables pane)",
     ),
     (
         "Ctrl-J",
@@ -725,14 +725,18 @@ impl App {
 
     /// Ctrl-C copies the query being built as a GraphQL document, Ctrl-J (`json`) as the
     /// JSON body of a request with the variables typed so far. Only while composing or in
-    /// the Variables pane of Run mode; the response is not copied yet.
+    /// Run mode; with the Response pane focused Ctrl-C copies the response instead.
     fn copy_query(&mut self, json: bool) -> Action {
         let busy = self.help_open || self.confirm.is_some() || self.pending_import.is_some();
         if busy || self.is_editing() {
             return Action::None;
         }
         if self.focused(Focus::Response) {
-            return Action::None;
+            return if json {
+                Action::None
+            } else {
+                self.copy_response()
+            };
         }
         let query = match self.generated_query() {
             Some(Ok(query)) => query,
@@ -755,6 +759,36 @@ impl App {
             n => format!("copied the query as JSON; {n} variables are unset or invalid, left out"),
         });
         Action::Copy(copy.text)
+    }
+
+    /// The response as the pane shows it (errors, then data), without the note about the
+    /// output being capped. A capped response is copied capped, and the notice says so.
+    fn copy_response(&mut self) -> Action {
+        let state = self
+            .design
+            .as_ref()
+            .and_then(|design| design.run.as_ref())
+            .map(|run| &run.state);
+        let Some(RunState::Done(view)) = state else {
+            return self.notify("no response to copy yet");
+        };
+        let text = view
+            .body_lines()
+            .into_iter()
+            .filter(|(kind, _)| *kind != LineKind::Note)
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.notice = Some(if view.total_lines > view.lines.len() {
+            format!(
+                "copied the response, capped: {} of {} lines",
+                view.lines.len(),
+                view.total_lines
+            )
+        } else {
+            "copied the response".to_string()
+        });
+        Action::Copy(text)
     }
 
     /// A pasted query: opens its design, asking first when that would replace a selection.
@@ -2875,5 +2909,73 @@ mod tests {
         for keys in [BROWSE_KEYS, DESIGN_KEYS] {
             assert!(keys.iter().any(|(key, _)| *key == "Paste"));
         }
+    }
+
+    fn ran_with_response(body: &str) -> App {
+        let mut app = design_app();
+        me_with_id(&mut app);
+        run_request(press(&mut app, KeyCode::Char('r')));
+        app.apply_run_result(1, Ok(view_of(200, body)));
+        assert!(app.focused(Focus::Response));
+        app
+    }
+
+    #[test]
+    fn ctrl_c_in_the_response_pane_copies_what_the_pane_shows() {
+        let mut app = ran_with_response(r#"{"data":{"me":{"id":"1"}}}"#);
+        let expected = match &app.design.as_ref().unwrap().run.as_ref().unwrap().state {
+            RunState::Done(view) => view.lines.join("\n"),
+            other => panic!("{other:?}"),
+        };
+        assert!(expected.contains("\"id\": \"1\""));
+        assert_eq!(ctrl(&mut app, 'c'), Action::Copy(expected));
+        assert_eq!(app.status(1_000).0, "copied the response");
+    }
+
+    #[test]
+    fn a_copied_response_starts_with_its_errors() {
+        let mut app = ran_with_response(r#"{"errors":[{"message":"boom"}],"data":{"me":null}}"#);
+        let Action::Copy(text) = ctrl(&mut app, 'c') else {
+            panic!("expected a copy");
+        };
+        assert!(text.starts_with("error: boom\n\n"), "{text}");
+    }
+
+    #[test]
+    fn a_capped_response_is_copied_capped_and_the_notice_says_so() {
+        let mut app = ran_with_response("{}");
+        let capped = ResponseView {
+            status: 200,
+            elapsed_ms: 1,
+            errors: Vec::new(),
+            not_json: false,
+            lines: vec!["a".to_string(), "b".to_string()],
+            total_lines: 5,
+        };
+        app.design.as_mut().unwrap().run.as_mut().unwrap().state = RunState::Done(capped);
+        assert_eq!(ctrl(&mut app, 'c'), Action::Copy("a\nb".to_string()));
+        assert_eq!(
+            app.status(1_000).0,
+            "copied the response, capped: 2 of 5 lines"
+        );
+    }
+
+    #[test]
+    fn there_is_no_response_to_copy_while_running_or_after_a_failure() {
+        let mut app = design_app();
+        me_with_id(&mut app);
+        run_request(press(&mut app, KeyCode::Char('r')));
+        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+        assert!(app.status(1_000).0.contains("no response to copy yet"));
+
+        app.apply_run_result(1, Err("request failed".to_string()));
+        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+        assert!(app.status(1_000).0.contains("no response to copy yet"));
+    }
+
+    #[test]
+    fn ctrl_j_in_the_response_pane_does_nothing() {
+        let mut app = ran_with_response(r#"{"data":{"me":{"id":"1"}}}"#);
+        assert_eq!(ctrl(&mut app, 'j'), Action::None);
     }
 }
