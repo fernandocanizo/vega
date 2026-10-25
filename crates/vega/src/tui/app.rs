@@ -12,7 +12,7 @@ use vega_core::querygen::{self, GenerateError, GeneratedQuery, VariableDef};
 use vega_core::response::{LineKind, ResponseView};
 use vega_core::schema::{Root, Schema};
 use vega_core::search::{self, Hit};
-use vega_core::selection::{self, Path, Row, Seg, Selection, TreeRoot};
+use vega_core::selection::{self, NodeKind, Path, Row, Seg, Selection, TreeRoot};
 use vega_core::variables::{self, Editor, State, Values};
 
 use crate::tui::connection::{Modal, Outcome};
@@ -100,10 +100,17 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("Ctrl-Home / Ctrl-End", "Go to the first or last row"),
     ("→", "Expand a node, or step into it"),
     ("←", "Collapse a node, or go to its parent"),
-    ("Space", "Select or unselect a field"),
+    (
+        "Space",
+        "Select or unselect a field, then move to the next one",
+    ),
     (
         "Ctrl-A",
-        "Select every field of the operation (again to clear)",
+        "Select every field that needs no variable, three levels deep (again to clear)",
+    ),
+    (
+        "Alt-A",
+        "Select every field, variables included (again to clear)",
     ),
     ("Tab", "Move to the next pane"),
     ("Enter", "Edit the highlighted variable (Variables pane)"),
@@ -423,6 +430,9 @@ impl App {
                 }
             };
         }
+        if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('a') {
+            return self.toggle_select_all(true);
+        }
         if ctrl {
             return match key.code {
                 KeyCode::Char('q') => {
@@ -432,7 +442,7 @@ impl App {
                 KeyCode::Char('r') => self.request_refresh(),
                 KeyCode::Char('c') => self.copy_query(false),
                 KeyCode::Char('j') => self.copy_query(true),
-                KeyCode::Char('a') => self.toggle_select_all(),
+                KeyCode::Char('a') => self.toggle_select_all(false),
                 KeyCode::Home => {
                     self.jump_to_end(false);
                     Action::None
@@ -766,10 +776,10 @@ impl App {
         Action::Copy(copy.text)
     }
 
-    /// Ctrl-A in the Details pane: selects every field of the operation (see
-    /// `selection::select_all`), or clears the fields when all of them are selected
-    /// already.
-    fn toggle_select_all(&mut self) -> Action {
+    /// Ctrl-A (without variables) and Alt-A (`with_variables`) in the Details pane: selects
+    /// every field of the operation (see `selection::select_all`), or clears the fields
+    /// when all of them are selected already.
+    fn toggle_select_all(&mut self, with_variables: bool) -> Action {
         let busy = self.help_open || self.confirm.is_some() || self.pending_import.is_some();
         let Some(design) = self.design.as_mut() else {
             return Action::None;
@@ -780,7 +790,7 @@ impl App {
         if design.read_only() || design.focus != Focus::Details {
             return Action::None;
         }
-        let all = selection::select_all(&self.schema, &design.root);
+        let all = selection::select_all(&self.schema, &design.root, with_variables);
         if all.selection.is_empty() {
             return self.notify("nothing to select");
         }
@@ -960,8 +970,42 @@ impl App {
         if design.read_only() {
             return;
         }
-        if let Some(row) = rows.get(design.cursor) {
-            design.selection.toggle_node(&row.node);
+        let changed = rows
+            .get(design.cursor)
+            .is_some_and(|row| design.selection.toggle_node(&row.node));
+        if changed {
+            self.move_to_next_selectable();
+        }
+    }
+
+    /// After Space: the cursor goes to the next field that can be selected. Collapsed
+    /// objects on the way are opened (`args` groups are not), and when nothing further can
+    /// be selected nothing moves and nothing opens.
+    fn move_to_next_selectable(&mut self) {
+        /// A bound for schemas with a great many nested objects and no field to select.
+        const MAX_STEPS: usize = 10_000;
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
+        let mut expanded = design.expanded.clone();
+        for index in (design.cursor + 1..).take(MAX_STEPS) {
+            let rows = selection::rows(&self.schema, &design.root, &expanded);
+            let Some(row) = rows.get(index) else {
+                return;
+            };
+            match row.node.kind {
+                NodeKind::Leaf | NodeKind::Optional => {
+                    design.expanded = expanded;
+                    design.cursor = index;
+                    return;
+                }
+                NodeKind::Composite
+                    if !row.expanded && row.node.path.last() != Some(&Seg::Args) =>
+                {
+                    expanded.insert(row.node.path.clone());
+                }
+                _ => {}
+            }
         }
     }
 
@@ -2096,20 +2140,21 @@ mod tests {
         ));
 
         press(&mut app, KeyCode::Down); // id
-        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' ')); // the cursor moves on to name
         assert_eq!(query_text(&app), "query Me {\n  me {\n    id\n  }\n}");
         assert!(app.is_selected(&[Seg::Field("id".to_string())]));
 
-        press(&mut app, KeyCode::Down); // name
-        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' ')); // name
         assert_eq!(
             query_text(&app),
             "query Me {\n  me {\n    id\n    name\n  }\n}"
         );
 
         press(&mut app, KeyCode::Up);
-        press(&mut app, KeyCode::Char(' ')); // unselect id
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char(' ')); // unselect id, and move on all the same
         assert_eq!(query_text(&app), "query Me {\n  me {\n    name\n  }\n}");
+        assert_eq!(app.design.as_ref().unwrap().cursor, 2);
     }
 
     #[test]
@@ -2169,8 +2214,7 @@ mod tests {
         let mut app = design_app();
         open_me(&mut app);
         press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Char(' ')); // id
-        press(&mut app, KeyCode::Down); // name, cursor 2
+        press(&mut app, KeyCode::Char(' ')); // id, the cursor moves on to name (2)
         press(&mut app, KeyCode::Esc);
         assert!(app.design.is_none());
 
@@ -2211,8 +2255,10 @@ mod tests {
         press(&mut app, KeyCode::Char(' '));
         assert!(!app.is_selected(&[Seg::Args, Seg::Arg("term".to_string())]));
         press(&mut app, KeyCode::Down); // first (optional)
+        let first = app.design.as_ref().unwrap().cursor;
         press(&mut app, KeyCode::Char(' '));
         assert!(app.is_selected(&[Seg::Args, Seg::Arg("first".to_string())]));
+        app.design.as_mut().unwrap().cursor = first; // Space moved on: come back
         press(&mut app, KeyCode::Char(' '));
         assert!(!app.is_selected(&[Seg::Args, Seg::Arg("first".to_string())]));
     }
@@ -2225,7 +2271,8 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Char(' ')); // id
+        press(&mut app, KeyCode::Char(' ')); // id, the cursor moves on to name
+        press(&mut app, KeyCode::Up);
         press(&mut app, KeyCode::Up); // args group
         press(&mut app, KeyCode::Right); // expand it
         press(&mut app, KeyCode::Down); // role
@@ -2274,12 +2321,12 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Char(' ')); // id
+        press(&mut app, KeyCode::Char(' ')); // id, the cursor moves on to name
+        press(&mut app, KeyCode::Up);
         press(&mut app, KeyCode::Up);
         press(&mut app, KeyCode::Right);
         press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Char(' ')); // role
-        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // role, the cursor moves on to active
         press(&mut app, KeyCode::Char(' ')); // active
         press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Tab);
@@ -2305,12 +2352,13 @@ mod tests {
         press(app, KeyCode::Enter);
         press(app, KeyCode::Down);
         press(app, KeyCode::Down);
-        press(app, KeyCode::Char(' ')); // id
+        press(app, KeyCode::Char(' ')); // id, the cursor moves on to name
+        press(app, KeyCode::Up);
         press(app, KeyCode::Up);
         press(app, KeyCode::Right); // expand args
+        press(app, KeyCode::Down);
         for _ in 0..3 {
-            press(app, KeyCode::Down);
-            press(app, KeyCode::Char(' ')); // role, active, floor
+            press(app, KeyCode::Char(' ')); // role, active, floor: each moves on
         }
         press(app, KeyCode::Tab);
         press(app, KeyCode::Tab);
@@ -3018,11 +3066,34 @@ mod tests {
         assert_eq!(ctrl(&mut app, 'j'), Action::None);
     }
 
+    fn alt(app: &mut App, c: char) -> Action {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT))
+    }
+
     #[test]
-    fn ctrl_a_selects_every_field_and_a_second_press_clears_them() {
+    fn ctrl_a_selects_the_fields_that_need_no_variable_and_a_second_press_clears_them() {
         let mut app = design_app();
         open_me(&mut app);
         ctrl(&mut app, 'a');
+        assert_eq!(app.status(1_000).0, "selected 3 fields");
+        assert_eq!(
+            query_text(&app),
+            "query Me {\n  me {\n    id\n    name\n    role\n  }\n}"
+        );
+
+        ctrl(&mut app, 'a');
+        assert_eq!(app.status(1_000).0, "cleared the selection");
+        assert!(matches!(
+            app.generated_query(),
+            Some(Err(vega_core::querygen::GenerateError::EmptySelection))
+        ));
+    }
+
+    #[test]
+    fn alt_a_selects_every_field_including_those_that_need_variables() {
+        let mut app = design_app();
+        open_me(&mut app);
+        alt(&mut app, 'a');
         assert_eq!(app.status(1_000).0, "selected 7 fields");
         let text = query_text(&app);
         for wanted in [
@@ -3036,21 +3107,19 @@ mod tests {
         }
         assert!(!text.contains("friends"), "{text}");
 
-        ctrl(&mut app, 'a');
+        alt(&mut app, 'a');
         assert_eq!(app.status(1_000).0, "cleared the selection");
-        assert!(matches!(
-            app.generated_query(),
-            Some(Err(vega_core::querygen::GenerateError::EmptySelection))
-        ));
     }
 
     #[test]
-    fn ctrl_a_completes_a_partial_selection_instead_of_clearing_it() {
+    fn select_all_completes_a_partial_selection_instead_of_clearing_it() {
         let mut app = design_app();
         open_me(&mut app);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Char(' ')); // id only
         ctrl(&mut app, 'a');
+        assert_eq!(app.status(1_000).0, "selected 3 fields");
+        alt(&mut app, 'a');
         assert_eq!(app.status(1_000).0, "selected 7 fields");
     }
 
@@ -3064,6 +3133,7 @@ mod tests {
         open_me(&mut app);
         press(&mut app, KeyCode::Tab); // Query pane
         ctrl(&mut app, 'a');
+        alt(&mut app, 'a');
         assert!(matches!(
             app.generated_query(),
             Some(Err(vega_core::querygen::GenerateError::EmptySelection))
@@ -3095,17 +3165,87 @@ mod tests {
     }
 
     #[test]
-    fn the_design_help_lists_ctrl_a_and_space_still_toggles_one_field() {
-        assert!(DESIGN_KEYS.iter().any(|(key, _)| *key == "Ctrl-A"));
+    fn the_design_help_lists_both_select_all_keys() {
+        for wanted in ["Ctrl-A", "Alt-A"] {
+            assert!(DESIGN_KEYS.iter().any(|(key, _)| *key == wanted));
+        }
+    }
+
+    #[test]
+    fn space_selects_the_field_and_moves_to_the_next_selectable_one() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down); // id
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(query_text(&app), "query Me {\n  me {\n    id\n  }\n}");
+        assert_eq!(app.design.as_ref().unwrap().cursor, 2);
+        assert_eq!(row_labels(&app)[2], "name: String");
+    }
+
+    #[test]
+    fn space_opens_a_collapsed_object_and_lands_on_its_first_field() {
+        let mut app = design_app();
+        open_me(&mut app);
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down); // id, name, role
+        }
+        press(&mut app, KeyCode::Char(' ')); // role: friends is next, and collapsed
+        let design = app.design.as_ref().unwrap();
+        assert!(design
+            .expanded
+            .contains(&vec![Seg::Field("friends".to_string())]));
+        let rows = app.design_rows();
+        assert_eq!(
+            rows[design.cursor].node.path,
+            [
+                Seg::Field("friends".to_string()),
+                Seg::Field("id".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn space_does_not_open_args_groups_on_its_way() {
+        let mut app = design_app();
+        open_me(&mut app);
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down);
+        }
+        // role, then friends.id, friends.name and friends.role; `friends.friends` is
+        // recursive and `friends.posts` takes arguments: its `args` group stays closed.
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Char(' '));
+        }
+        let design = app.design.as_ref().unwrap();
+        let friends_posts = vec![
+            Seg::Field("friends".to_string()),
+            Seg::Field("posts".to_string()),
+        ];
+        let mut args = friends_posts.clone();
+        args.push(Seg::Args);
+        assert!(design.expanded.contains(&friends_posts));
+        assert!(!design.expanded.contains(&args));
+        let rows = app.design_rows();
+        let mut id = friends_posts;
+        id.push(Seg::Field("id".to_string()));
+        assert_eq!(rows[design.cursor].node.path, id);
+    }
+
+    #[test]
+    fn unselecting_moves_on_too_and_an_object_row_does_nothing() {
         let mut app = design_app();
         open_me(&mut app);
         press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' ')); // select id
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char(' ')); // unselect id: moves on
+        assert_eq!(app.design.as_ref().unwrap().cursor, 2);
+
+        for _ in 0..2 {
+            press(&mut app, KeyCode::Down); // role, then friends (an object)
+        }
+        let before = app.design.as_ref().unwrap().cursor;
         press(&mut app, KeyCode::Char(' '));
-        assert_eq!(query_text(&app), "query Me {\n  me {\n    id\n  }\n}");
-        assert_eq!(
-            app.design.as_ref().unwrap().cursor,
-            1,
-            "Space does not move"
-        );
+        assert_eq!(app.design.as_ref().unwrap().cursor, before);
     }
 }

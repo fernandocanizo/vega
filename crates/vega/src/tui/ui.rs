@@ -373,11 +373,24 @@ fn has_focus(app: &App, focus: Focus) -> bool {
             .is_some_and(|design| design.focus == focus)
 }
 
-/// True when Ctrl-A selects every field: composing the query of an operation.
-fn selects_all(app: &App) -> bool {
-    app.design
+/// The hint for the select-all keys in the corner of the Details pane while composing the
+/// query of an operation, as much of it as fits next to the title.
+fn select_all_hint(app: &App, width: u16) -> Option<&'static str> {
+    let composing = app
+        .design
         .as_ref()
-        .is_some_and(|design| !design.read_only() && design.run.is_none())
+        .is_some_and(|design| !design.read_only() && design.run.is_none());
+    if !composing {
+        return None;
+    }
+    // Two corners, the title and a space to tell them apart.
+    let room = usize::from(width).saturating_sub(2 + "Details".len() + 1);
+    [
+        "Select all: Ctrl-A · with variables: Alt-A",
+        "Select all: Ctrl-A",
+    ]
+    .into_iter()
+    .find(|hint| hint.chars().count() <= room)
 }
 
 /// The Details tree over the Description pane.
@@ -385,11 +398,8 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App, rows: &[Row], cursor: 
     let parts = split_column(area);
 
     let mut block = pane("Details", has_focus(app, Focus::Details));
-    if selects_all(app) {
-        let hint = Span::styled(
-            "Select all: Ctrl-A",
-            Style::default().add_modifier(Modifier::DIM),
-        );
+    if let Some(hint) = select_all_hint(app, parts[0].width) {
+        let hint = Span::styled(hint, Style::default().add_modifier(Modifier::DIM));
         block = block.title_top(Line::from(hint).right_aligned());
     }
     if rows.is_empty() {
@@ -1058,7 +1068,8 @@ mod tests {
         let mut app = design_app_on("users");
         press_key(&mut app, KeyCode::Down);
         press_key(&mut app, KeyCode::Down);
-        press_key(&mut app, KeyCode::Char(' ')); // id
+        press_key(&mut app, KeyCode::Char(' ')); // id, the cursor moves on to name
+        press_key(&mut app, KeyCode::Up);
         press_key(&mut app, KeyCode::Up);
         press_key(&mut app, KeyCode::Right);
         for _ in 0..3 {
@@ -1247,5 +1258,31 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.design.as_ref().unwrap().read_only());
         assert!(!screen(&render(&app, 1_000)).contains("Select all"));
+    }
+
+    #[test]
+    fn a_wide_pane_shows_both_select_all_keys_and_a_narrow_one_keeps_its_title() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = app();
+        for c in "userread".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let wide = Terminal::new(TestBackend::new(200, 30)).unwrap();
+        let mut wide = wide;
+        wide.draw(|frame| draw(frame, &app, 1_000)).unwrap();
+        let text = screen(&wide);
+        assert!(
+            text.contains("Select all: Ctrl-A · with variables: Alt-A"),
+            "{text}"
+        );
+
+        for width in [10, 20, 30, 40] {
+            let mut narrow = Terminal::new(TestBackend::new(width, 20)).unwrap();
+            narrow.draw(|frame| draw(frame, &app, 1_000)).unwrap();
+            let text = screen(&narrow);
+            assert!(!text.contains("with variables"), "{width}: {text}");
+        }
     }
 }
