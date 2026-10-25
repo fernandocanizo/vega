@@ -2656,7 +2656,7 @@ dependencies = [
 
 [[package]]
 name = "vega"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2669,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "vega-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "graphql-parser",
