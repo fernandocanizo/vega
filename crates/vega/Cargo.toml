@@ -12,7 +12,7 @@ base64 = "0.22.1"
 clap = { version = "4.6.7", features = ["derive"] }
 ratatui = "0.30.2"
 serde_json = "1.0.154"
-vega-core = { version = "0.6.0", path = "../vega-core" }
+vega-core = { version = "0.7.0", path = "../vega-core" }
 
 [dev-dependencies]
 tempfile = "3.27.0"
