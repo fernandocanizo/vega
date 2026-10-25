@@ -460,7 +460,11 @@ impl App {
     pub fn connect_profile(&mut self, name: String, settings: Settings) -> Action {
         self.picker = None;
         self.profile_name = Some(name);
-        self.apply_connection(settings)
+        // Always a new connection: a schema fetched with other credentials is not kept.
+        self.settings = settings;
+        self.reset_connection();
+        self.refresh = RefreshState::Running;
+        Action::Load
     }
 
     /// The loop read the profile's settings: edit them in the connection modal.
@@ -1506,6 +1510,19 @@ mod tests {
             app.status(0).0
         );
         assert!(!empty_app().status(0).0.contains("staging"));
+    }
+
+    #[test]
+    fn connecting_to_a_profile_on_the_same_uri_still_starts_over() {
+        let mut app = app().with_settings(settings("https://nexus.example.com/graphql"));
+        type_text(&mut app, "user");
+        let mut other = settings("https://nexus.example.com/graphql");
+        other.headers = vec![vega_core::headers::Header::new("X-Token", "k").unwrap()];
+        let action = app.connect_profile("a".into(), other.clone());
+        assert_eq!(action, Action::Load);
+        assert_eq!(app.query, "");
+        assert!(!app.is_loaded());
+        assert_eq!(app.settings(), &other);
     }
 
     #[test]
