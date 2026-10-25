@@ -29,6 +29,7 @@ A profile saves an endpoint and its credentials under a name, so you do not rety
 - Save from the TUI: `Ctrl-K`, fill the form, type a name in "Save as", press `Ctrl-S`. `Enter` still connects without saving. In the picker (`Ctrl-P`), `Enter` connects, `e` edits (the secret is read from the keyring and masked), `n` adds, `d` deletes after `y`, `Esc` closes.
 - Use from the command line: `--profile NAME` or `VEGA_PROFILE=NAME` (the flag wins). A blank name means no profile. An unknown name is an error that lists the saved ones.
 - `--uri` (or `VEGA_GRAPHQL_URI`) overrides the profile's endpoint. The profile's credentials are sent only when that endpoint has the same origin (scheme, host and port) as the profile's own; otherwise they are withheld and a warning says so. Credentials from the environment are never withheld.
+- `--key-header` and `VEGA_GRAPHQL_KEY_HEADER` only affect `VEGA_GRAPHQL_KEY`; an `api_key` profile uses the header name saved with it.
 - Credentials from the environment (`VEGA_GRAPHQL_KEY` or `VEGA_GRAPHQL_HEADERS`) replace the profile's credentials entirely; they are not merged.
 - A profile whose keyring entry is missing connects with no headers and prints a warning on stderr.
 
