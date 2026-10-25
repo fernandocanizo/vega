@@ -75,12 +75,20 @@ fn main() -> anyhow::Result<()> {
     let mut warning = None;
     let connected = match &profile_name {
         Some(name) => {
-            let connected =
-                profile::connect(&file_config, &KeyringStore, name).with_context(|| {
-                    format!(
-                        "cannot use profile `{name}` (VEGA_GRAPHQL_URI and VEGA_GRAPHQL_KEY work without the keyring)"
-                    )
-                })?;
+            // Environment credentials replace the stored ones, so the keyring stays shut.
+            let connected = if env_credentials {
+                profile::connect_without_secret(&file_config, name)
+            } else {
+                profile::connect(&file_config, &KeyringStore, name)
+            }
+            .map_err(|error| {
+                let hint = if matches!(error, profile::ProfileError::Secret(_)) {
+                    " (VEGA_GRAPHQL_URI and VEGA_GRAPHQL_KEY work without the keyring)"
+                } else {
+                    ""
+                };
+                anyhow::Error::new(error).context(format!("cannot use profile `{name}`{hint}"))
+            })?;
             if connected.missing_credentials && !env_credentials {
                 warning = Some(ProfileWarning::MissingCredentials);
             }
