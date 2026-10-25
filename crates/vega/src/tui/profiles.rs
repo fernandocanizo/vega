@@ -1,7 +1,7 @@
 //! The profile picker: a pure state machine (key in, outcome out), like the connection
 //! modal. It never holds or shows a header value.
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use vega_core::profile::Kind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,14 +67,26 @@ impl Picker {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Outcome {
         let name = self.entries.get(self.selected).map(|e| e.name.clone());
+        // Control and Alt chords are never the plain letter keys.
+        let code = if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            match key.code {
+                KeyCode::Char(_) => KeyCode::Null,
+                other => other,
+            }
+        } else {
+            key.code
+        };
         if self.confirming {
             self.confirming = false;
-            return match (key.code, name) {
+            return match (code, name) {
                 (KeyCode::Char('y' | 'Y'), Some(name)) => Outcome::Delete(name),
                 _ => Outcome::Open,
             };
         }
-        match key.code {
+        match code {
             KeyCode::Esc => Outcome::Close,
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
@@ -179,5 +191,24 @@ mod tests {
         p.handle_key(key(KeyCode::Char('d')));
         assert!(!p.confirming());
         assert_eq!(p.handle_key(key(KeyCode::Char('n'))), Outcome::New);
+    }
+
+    #[test]
+    fn control_and_alt_chords_are_not_the_plain_keys() {
+        let mut p = picker();
+        for modifier in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let chord = |c| KeyEvent::new(KeyCode::Char(c), modifier);
+            assert_eq!(p.handle_key(chord('d')), Outcome::Open);
+            assert!(!p.confirming());
+            assert_eq!(p.handle_key(chord('e')), Outcome::Open);
+            assert_eq!(p.handle_key(chord('n')), Outcome::Open);
+        }
+        p.handle_key(key(KeyCode::Char('d')));
+        assert!(p.confirming());
+        assert_eq!(
+            p.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+            Outcome::Open
+        );
+        assert!(!p.confirming());
     }
 }
