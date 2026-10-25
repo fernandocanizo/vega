@@ -103,7 +103,11 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("Space", "Select or unselect a field"),
     ("Tab", "Move to the next pane"),
     ("Enter", "Edit the highlighted variable (Variables pane)"),
-    ("Ctrl-C", "Copy the query as a JSON request body"),
+    ("Ctrl-C", "Copy the query as a GraphQL document"),
+    (
+        "Ctrl-J",
+        "Copy the query and variables as a JSON request body",
+    ),
     ("Paste", "Import a query, replacing the current one"),
     ("r", "Run the query"),
     ("Esc", "Back to the results"),
@@ -124,7 +128,11 @@ pub const RUN_KEYS: &[(&str, &str)] = &[
     ("Enter", "Edit the highlighted variable (Variables pane)"),
     (
         "Ctrl-C",
-        "Copy the query as a JSON request body (Variables pane)",
+        "Copy the query as a GraphQL document (Variables pane)",
+    ),
+    (
+        "Ctrl-J",
+        "Copy the query and variables as a JSON request body (Variables pane)",
     ),
     ("r", "Run the query again"),
     ("Esc", "Back to Design"),
@@ -418,7 +426,8 @@ impl App {
                     Action::None
                 }
                 KeyCode::Char('r') => self.request_refresh(),
-                KeyCode::Char('c') => self.copy_query(),
+                KeyCode::Char('c') => self.copy_query(false),
+                KeyCode::Char('j') => self.copy_query(true),
                 KeyCode::Home => {
                     self.jump_to_end(false);
                     Action::None
@@ -714,10 +723,10 @@ impl App {
         self.start_run(request)
     }
 
-    /// Ctrl-C: the query being built, with the variables typed so far, as the JSON body
-    /// of a request. Only while composing or in the Variables pane of Run mode; the
-    /// response is not copied yet.
-    fn copy_query(&mut self) -> Action {
+    /// Ctrl-C copies the query being built as a GraphQL document, Ctrl-J (`json`) as the
+    /// JSON body of a request with the variables typed so far. Only while composing or in
+    /// the Variables pane of Run mode; the response is not copied yet.
+    fn copy_query(&mut self, json: bool) -> Action {
         let busy = self.help_open || self.confirm.is_some() || self.pending_import.is_some();
         if busy || self.is_editing() {
             return Action::None;
@@ -730,6 +739,10 @@ impl App {
             Some(Err(_)) => return self.notify("nothing to copy: select at least one field"),
             None => return Action::None,
         };
+        if !json {
+            self.notice = Some("copied the query".to_string());
+            return Action::Copy(query.text);
+        }
         let values = self
             .design
             .as_ref()
@@ -2606,13 +2619,13 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_copies_the_query_with_the_variables_typed_so_far() {
+    fn ctrl_j_copies_the_query_with_the_variables_typed_so_far() {
         let mut app = design_app();
         node_variables(&mut app);
         press(&mut app, KeyCode::Enter);
         type_text(&mut app, "42");
         press(&mut app, KeyCode::Enter);
-        let body = copied(ctrl(&mut app, 'c'));
+        let body = copied(ctrl(&mut app, 'j'));
         assert_eq!(
             body["query"],
             "query Node($id: ID!) {\n  node(id: $id) {\n    __typename\n    id\n  }\n}"
@@ -2622,61 +2635,98 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_copies_while_composing_and_says_what_was_left_out() {
+    fn ctrl_c_copies_the_query_as_plain_graphql_with_real_newlines() {
+        let mut app = design_app();
+        node_variables(&mut app);
+        press(&mut app, KeyCode::Enter);
+        type_text(&mut app, "42");
+        press(&mut app, KeyCode::Enter);
+        match ctrl(&mut app, 'c') {
+            Action::Copy(text) => assert_eq!(
+                text,
+                "query Node($id: ID!) {\n  node(id: $id) {\n    __typename\n    id\n  }\n}"
+            ),
+            other => panic!("expected Action::Copy, got {other:?}"),
+        }
+        assert_eq!(app.status(1_000).0, "copied the query");
+    }
+
+    #[test]
+    fn a_plain_copy_pastes_back_as_the_same_design() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        let Action::Copy(text) = ctrl(&mut app, 'c') else {
+            panic!("expected a copy");
+        };
+        let mut other = design_app();
+        other.handle_paste(&text);
+        assert_eq!(query_text(&other), query_text(&app));
+    }
+
+    #[test]
+    fn ctrl_j_copies_while_composing_and_says_what_was_left_out() {
         let mut app = design_app();
         node_variables(&mut app);
         press(&mut app, KeyCode::Tab); // back to Details
-        let body = copied(ctrl(&mut app, 'c'));
+        let body = copied(ctrl(&mut app, 'j'));
         assert!(body.get("variables").is_none());
         assert!(app.status(1_000).0.contains("1 variable is unset"));
     }
 
     #[test]
-    fn ctrl_c_with_nothing_selected_explains_itself() {
+    fn ctrl_c_and_ctrl_j_with_nothing_selected_explain_themselves() {
         let mut app = design_app();
         open_me(&mut app);
-        assert_eq!(ctrl(&mut app, 'c'), Action::None);
-        assert!(app.status(1_000).0.contains("nothing to copy"));
+        for key in ['c', 'j'] {
+            assert_eq!(ctrl(&mut app, key), Action::None);
+            assert!(app.status(1_000).0.contains("nothing to copy"));
+            press(&mut app, KeyCode::Down); // any key clears the notice
+            press(&mut app, KeyCode::Up);
+        }
     }
 
     #[test]
-    fn ctrl_c_does_nothing_in_browse_on_a_type_tree_or_while_editing() {
+    fn the_copy_keys_do_nothing_in_browse_on_a_type_tree_or_while_editing() {
         let mut app = design_app();
-        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+        assert_eq!(ctrl(&mut app, 'j'), Action::None);
         assert!(!app.status(1_000).0.contains("copy"));
 
         let mut app = design_app();
         type_text(&mut app, "user");
         press(&mut app, KeyCode::Enter);
-        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+        assert_eq!(ctrl(&mut app, 'j'), Action::None);
 
         let mut app = design_app();
         node_variables(&mut app);
         press(&mut app, KeyCode::Enter);
         assert!(app.is_editing());
-        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+        assert_eq!(ctrl(&mut app, 'j'), Action::None);
     }
 
     #[test]
-    fn ctrl_c_in_run_mode_copies_from_the_variables_pane_only() {
+    fn the_copy_keys_in_run_mode_copy_from_the_variables_pane_only() {
         let mut app = design_app();
         open_me(&mut app);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Char(' ')); // id
         run_request(press(&mut app, KeyCode::Char('r')));
         assert!(app.focused(Focus::Response));
-        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+        assert_eq!(ctrl(&mut app, 'j'), Action::None);
 
         press(&mut app, KeyCode::Tab);
         assert!(app.focused(Focus::Variables));
-        let body = copied(ctrl(&mut app, 'c'));
+        let body = copied(ctrl(&mut app, 'j'));
         assert_eq!(body["query"], "query Me {\n  me {\n    id\n  }\n}");
     }
 
     #[test]
-    fn the_design_and_run_help_list_ctrl_c() {
+    fn the_design_and_run_help_list_both_copy_keys() {
         for keys in [DESIGN_KEYS, RUN_KEYS] {
-            assert!(keys.iter().any(|(key, _)| *key == "Ctrl-C"));
+            for wanted in ["Ctrl-C", "Ctrl-J"] {
+                assert!(keys.iter().any(|(key, _)| *key == wanted));
+            }
         }
     }
 
