@@ -45,6 +45,13 @@ enum Update {
     },
 }
 
+/// What the TUI shows about the profile it starts on.
+#[derive(Default)]
+pub struct Startup {
+    pub profile_name: Option<String>,
+    pub notice: Option<String>,
+}
+
 /// Runs the TUI. `entry` is the cached schema for the endpoint, if any; without one the
 /// schema is fetched in the background (or, with no endpoint, the connection modal
 /// opens).
@@ -53,12 +60,15 @@ pub fn run(
     settings: Settings,
     cache_dir: PathBuf,
     config_dir: Option<PathBuf>,
+    startup: Startup,
 ) -> anyhow::Result<()> {
     let app = match entry {
         Some(entry) => App::new(entry.response.data.schema, &settings.uri, entry.fetched_at)
             .with_settings(settings),
         None => App::empty(settings),
-    };
+    }
+    .with_profile_name(startup.profile_name)
+    .with_notice(startup.notice);
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let previous_hook = std::panic::take_hook();
