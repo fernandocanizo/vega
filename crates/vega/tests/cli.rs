@@ -222,6 +222,36 @@ fn missing_endpoint_explains_how_to_set_one() {
 }
 
 #[test]
+fn an_unknown_profile_is_an_error_that_lists_the_saved_ones() {
+    let cache = seeded_cache(60);
+    let config = cache.path().join("config/vega");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("config.toml"),
+        "[profiles.open]\nuri = \"https://o/graphql\"\nkind = \"none\"\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_vega"))
+        .args(["--profile", "nope", "--search", ""])
+        .env("XDG_CACHE_HOME", cache.path())
+        .env("XDG_CONFIG_HOME", cache.path().join("config"))
+        .env_remove("VEGA_GRAPHQL_URI")
+        .env_remove("VEGA_GRAPHQL_KEY")
+        .env_remove("VEGA_GRAPHQL_HEADERS")
+        .env_remove("VEGA_PROFILE")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(
+        err.contains("no profile named `nope` (saved: open)"),
+        "{err}"
+    );
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
 fn the_prefixed_endpoint_variable_is_read() {
     let cache = seeded_cache(60);
     let out = Command::new(env!("CARGO_BIN_EXE_vega"))

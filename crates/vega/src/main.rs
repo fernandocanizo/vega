@@ -10,9 +10,10 @@ use clap::Parser;
 use vega_core::config::{self, AuthInput, FileConfig, Settings};
 use vega_core::querygen::GeneratedQuery;
 use vega_core::schema::{Root, Schema};
+use vega_core::secrets::KeyringStore;
 use vega_core::selection::{self, OperationRef, Selection};
 use vega_core::variables::{self, State, Values};
-use vega_core::{cache, client, describe, querygen, response, search, xdg};
+use vega_core::{cache, client, describe, profile, querygen, response, search, xdg};
 
 use crate::cli::Cli;
 
@@ -25,13 +26,35 @@ fn main() -> anyhow::Result<()> {
     let one_shot = cli.search.is_some() || cli.describe.is_some() || cli.query.is_some();
 
     let env_uri = env_var("VEGA_GRAPHQL_URI");
+    let profile_name = cli
+        .profile
+        .clone()
+        .or_else(|| env_var("VEGA_PROFILE"))
+        .filter(|name| !name.is_empty());
     let has_endpoint = [cli.uri.as_deref(), env_uri.as_deref()]
         .into_iter()
         .flatten()
         .any(|uri| !uri.is_empty());
-    let file_config = match xdg::config_dir() {
-        Some(dir) if !has_endpoint => config::load_file_config(&dir)?,
+    let mut file_config = match xdg::config_dir() {
+        Some(dir) if profile_name.is_some() || !has_endpoint => config::load_file_config(&dir)?,
         _ => FileConfig::default(),
+    };
+    let connected = match &profile_name {
+        Some(name) => {
+            let connected =
+                profile::connect(&file_config, &KeyringStore, name).with_context(|| {
+                    format!(
+                        "cannot use profile `{name}` (VEGA_GRAPHQL_URI and VEGA_GRAPHQL_KEY work without the keyring)"
+                    )
+                })?;
+            if connected.missing_credentials {
+                eprintln!("warning: no stored credentials found for profile `{name}`");
+            }
+            // The profile sits between the environment and the top-level `uri`.
+            file_config.uri = None;
+            Some(connected)
+        }
+        None => None,
     };
     let auth = AuthInput {
         key: env_var("VEGA_GRAPHQL_KEY"),
@@ -41,13 +64,21 @@ fn main() -> anyhow::Result<()> {
             .or_else(|| env_var("VEGA_GRAPHQL_KEY_HEADER")),
         headers: env_var("VEGA_GRAPHQL_HEADERS"),
     };
+    let env_credentials = auth.key.as_deref().is_some_and(|k| !k.is_empty())
+        || auth
+            .headers
+            .as_deref()
+            .is_some_and(|h| !h.trim().is_empty());
     // The terminal UI can start with no endpoint (it opens the connection modal); the
     // one-shot commands cannot.
-    let settings = if one_shot {
-        config::resolve_settings(cli.uri.clone(), env_uri, auth, file_config)?
-    } else {
-        config::resolve_settings_partial(cli.uri.clone(), env_uri, auth, file_config)?
-    };
+    let mut settings =
+        config::resolve_settings_partial(cli.uri.clone(), env_uri, auth, file_config)?;
+    if let Some(connected) = connected {
+        settings = config::with_profile(settings, connected.settings, env_credentials);
+    }
+    if one_shot && settings.uri.is_empty() {
+        return Err(config::ConfigError::MissingUri.into());
+    }
 
     let cache_dir = xdg::cache_dir()
         .context("cannot locate the cache directory: set XDG_CACHE_HOME or HOME")?;

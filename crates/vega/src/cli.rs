@@ -10,12 +10,20 @@ use clap::Parser;
 /// X-API-Key header (or the one named by --key-header or VEGA_GRAPHQL_KEY_HEADER).
 /// VEGA_GRAPHQL_HEADERS holds any other headers, one `Name: value` per line, and wins on
 /// the same name. See docs/authentication.md.
+///
+/// Saved profiles keep their credentials in the OS keyring, never in a file. Select one
+/// with --profile or VEGA_PROFILE.
 #[derive(Debug, Parser)]
 #[command(name = "vega", version)]
 pub struct Cli {
     /// GraphQL endpoint (overrides VEGA_GRAPHQL_URI and config.toml)
     #[arg(long)]
     pub uri: Option<String>,
+
+    /// Use a saved server profile (overrides VEGA_PROFILE). Its credentials come from
+    /// the OS keyring; save profiles from the connection modal (Ctrl-K, then Ctrl-S)
+    #[arg(long, value_name = "NAME")]
+    pub profile: Option<String>,
 
     /// Header name that carries VEGA_GRAPHQL_KEY (default X-API-Key; overrides
     /// VEGA_GRAPHQL_KEY_HEADER)
