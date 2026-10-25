@@ -195,15 +195,16 @@ fn dispatch(app: &mut App, action: Action, ctx: &mut Ctx) -> Option<Action> {
         },
         Action::ConnectProfile(name) => match connect_profile(ctx.config_dir, &name) {
             Ok(connected) => {
-                if connected.missing_credentials {
-                    app.profile_notice(&format!("no stored credentials found for profile {name}"));
-                }
+                notify_missing_credentials(app, &connected, &name);
                 return Some(app.connect_profile(name, connected.settings));
             }
             Err(message) => app.profile_notice(&message),
         },
         Action::EditProfile(name) => match connect_profile(ctx.config_dir, &name) {
-            Ok(connected) => app.edit_profile(name, connected.settings),
+            Ok(connected) => {
+                notify_missing_credentials(app, &connected, &name);
+                app.edit_profile(name, connected.settings);
+            }
             Err(message) => app.profile_notice(&message),
         },
         Action::DeleteProfile(name) => {
@@ -224,6 +225,12 @@ fn dispatch(app: &mut App, action: Action, ctx: &mut Ctx) -> Option<Action> {
         }
     }
     None
+}
+
+fn notify_missing_credentials(app: &mut App, connected: &profile::Connected, name: &str) {
+    if connected.missing_credentials {
+        app.profile_notice(&format!("no stored credentials found for profile {name}"));
+    }
 }
 
 const NO_CONFIG_DIR: &str = "cannot locate the config directory: set XDG_CONFIG_HOME or HOME";

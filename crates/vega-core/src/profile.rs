@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{value, DocumentMut, Item, Table};
 
 use crate::{
-    config::{ConfigError, FileConfig, Settings},
+    config::{load_file_config, ConfigError, FileConfig, Settings},
     headers::{self, Header, DEFAULT_KEY_HEADER},
-    secrets::SecretStore,
+    secrets::{SecretError, SecretStore},
 };
 
 /// How a profile authenticates; it decides what its keyring secret holds.
@@ -162,23 +162,27 @@ pub struct Connected {
     pub missing_credentials: bool,
 }
 
+fn lookup<'a>(file: &'a FileConfig, name: &str) -> Result<&'a Profile, ProfileError> {
+    file.profiles.get(name).ok_or_else(|| {
+        let known = if file.profiles.is_empty() {
+            "none".to_string()
+        } else {
+            file.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+        };
+        ProfileError::Unknown {
+            name: name.to_string(),
+            known,
+        }
+    })
+}
+
 /// Looks the profile up and reads its secret from `store`.
 pub fn connect(
     file: &FileConfig,
     store: &dyn SecretStore,
     name: &str,
 ) -> Result<Connected, ProfileError> {
-    let Some(profile) = file.profiles.get(name) else {
-        let known = if file.profiles.is_empty() {
-            "none".to_string()
-        } else {
-            file.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
-        };
-        return Err(ProfileError::Unknown {
-            name: name.to_string(),
-            known,
-        });
-    };
+    let profile = lookup(file, name)?;
     let secret = match profile.kind {
         Kind::NoAuth => None,
         _ => store.get(name)?,
@@ -187,6 +191,15 @@ pub fn connect(
     Ok(Connected {
         settings: profile.settings(secret.as_deref())?,
         missing_credentials,
+    })
+}
+
+/// Looks the profile up without touching the keyring: for when other credentials
+/// replace the stored ones anyway.
+pub fn connect_without_secret(file: &FileConfig, name: &str) -> Result<Connected, ProfileError> {
+    Ok(Connected {
+        settings: lookup(file, name)?.settings(None)?,
+        missing_credentials: false,
     })
 }
 
@@ -201,10 +214,19 @@ pub fn save(
     validate_name(name)?;
     validate_uri(&settings.uri)?;
     let (profile, secret) = Profile::from_settings(settings);
-    let previous = store.get(name)?;
+    // A profile without a secret may be saved on a machine with no keyring: then there
+    // is nothing to read back or remove.
+    let no_keyring_needed = |result: Result<(), SecretError>| match result {
+        Err(SecretError::Unavailable) if secret.is_none() => Ok(()),
+        other => other,
+    };
+    let previous = match store.get(name) {
+        Err(SecretError::Unavailable) if secret.is_none() => None,
+        other => other?,
+    };
     match &secret {
         Some(secret) => store.set(name, secret)?,
-        None => store.delete(name)?,
+        None => no_keyring_needed(store.delete(name))?,
     }
     let written = edit_config(dir, |profiles| {
         let mut table = Table::new();
@@ -218,7 +240,7 @@ pub fn save(
     if let Err(error) = written {
         let restored = match previous {
             Some(previous) => store.set(name, &previous),
-            None => store.delete(name),
+            None => no_keyring_needed(store.delete(name)),
         };
         return Err(match restored {
             Ok(()) => error.into(),
@@ -233,7 +255,14 @@ pub fn save(
 
 /// Removes the secret, then the config entry. A profile that is not there is fine.
 pub fn delete(dir: &Path, store: &dyn SecretStore, name: &str) -> Result<(), ProfileError> {
-    store.delete(name)?;
+    // A profile known to have no secret never touched the keyring.
+    let has_no_secret = load_file_config(dir)?
+        .profiles
+        .get(name)
+        .is_some_and(|profile| profile.kind == Kind::NoAuth);
+    if !has_no_secret {
+        store.delete(name)?;
+    }
     edit_config(dir, |profiles| {
         profiles.remove(name);
     })?;
@@ -284,8 +313,7 @@ fn edit_config(dir: &Path, change: impl FnOnce(&mut Table)) -> Result<(), Config
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::load_file_config;
-    use crate::secrets::MemoryStore;
+    use crate::secrets::{MemoryStore, UnavailableStore};
 
     fn dir_with(config: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -459,6 +487,42 @@ mod tests {
             assert!(!error.contains("secret"), "{error}");
         }
         assert!(!dir.path().join("config.toml").exists());
+    }
+
+    #[test]
+    fn a_profile_without_a_secret_never_needs_the_keyring() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UnavailableStore;
+        save(dir.path(), &store, "open", &settings(vec![], false)).unwrap();
+        let file = load_file_config(dir.path()).unwrap();
+        assert_eq!(file.profiles["open"].kind, Kind::NoAuth);
+        let connected = connect(&file, &store, "open").unwrap();
+        assert!(!connected.missing_credentials);
+        delete(dir.path(), &store, "open").unwrap();
+        assert!(load_file_config(dir.path()).unwrap().profiles.is_empty());
+        // A profile with a secret does need it.
+        let keyed = settings(vec![header("X-Token", "k")], true);
+        assert!(matches!(
+            save(dir.path(), &store, "keyed", &keyed),
+            Err(ProfileError::Secret(_))
+        ));
+    }
+
+    #[test]
+    fn connecting_without_the_secret_skips_the_keyring_but_still_finds_the_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = MemoryStore::default();
+        let keyed = settings(vec![header("X-Token", "k")], true);
+        save(dir.path(), &memory, "keyed", &keyed).unwrap();
+        let file = load_file_config(dir.path()).unwrap();
+        let connected = connect_without_secret(&file, "keyed").unwrap();
+        assert_eq!(connected.settings.uri, "https://x/graphql");
+        assert!(connected.settings.headers.is_empty());
+        assert!(!connected.missing_credentials);
+        assert!(matches!(
+            connect_without_secret(&file, "nope"),
+            Err(ProfileError::Unknown { .. })
+        ));
     }
 
     fn header(name: &str, value: &str) -> Header {

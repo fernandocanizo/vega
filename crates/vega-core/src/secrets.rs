@@ -113,6 +113,25 @@ impl SecretStore for MemoryStore {
     }
 }
 
+/// A store for tests whose every call says there is no keyring.
+#[cfg(test)]
+pub struct UnavailableStore;
+
+#[cfg(test)]
+impl SecretStore for UnavailableStore {
+    fn get(&self, _name: &str) -> Result<Option<String>, SecretError> {
+        Err(SecretError::Unavailable)
+    }
+
+    fn set(&self, _name: &str, _secret: &str) -> Result<(), SecretError> {
+        Err(SecretError::Unavailable)
+    }
+
+    fn delete(&self, _name: &str) -> Result<(), SecretError> {
+        Err(SecretError::Unavailable)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
