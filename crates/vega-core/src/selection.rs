@@ -455,6 +455,10 @@ impl Selection {
 /// could send in one query.
 pub const SELECT_ALL_LIMIT: usize = 1_000;
 
+/// How many levels of fields `select_all` goes down: the operation's own fields are the
+/// first level.
+pub const SELECT_ALL_DEPTH: usize = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AllLeaves {
     pub selection: Selection,
@@ -462,28 +466,56 @@ pub struct AllLeaves {
     pub capped: bool,
 }
 
-/// Every leaf of an operation that can be reached without entering a type already on the
-/// path from the root (a field of `User` that leads back to `User` is skipped, siblings of
-/// the same type are not). Breadth first, so a cap cuts the deepest fields. Optional
-/// arguments are not touched; type trees and scalar operations have nothing to select.
-pub fn select_all(schema: &Schema, root: &TreeRoot) -> AllLeaves {
-    select_all_up_to(schema, root, SELECT_ALL_LIMIT)
+/// Every leaf of an operation, `SELECT_ALL_DEPTH` levels down, that can be reached without
+/// entering a type already on the path from the root (a field of `User` that leads back to
+/// `User` is skipped, siblings of the same type are not). Fields that take a required
+/// argument need a variable: they are skipped, with everything below them, unless
+/// `with_variables`. The operation's own arguments stay either way. Breadth first, so the
+/// limit cuts the deepest fields. Optional arguments are not touched; type trees and
+/// scalar operations have nothing to select.
+pub fn select_all(schema: &Schema, root: &TreeRoot, with_variables: bool) -> AllLeaves {
+    select_all_up_to(
+        schema,
+        root,
+        with_variables,
+        SELECT_ALL_LIMIT,
+        SELECT_ALL_DEPTH,
+    )
 }
 
-/// A level of `select_all`: the path to a type, the type and the names above and at it.
-type Level<'a> = Vec<(Path, &'a FullType, Vec<&'a str>)>;
+/// Where `select_all` stands on a type: the path to it, the names of the types from the
+/// root down to it and how many fields deep it is (branches are not a level).
+struct Frame<'a> {
+    path: Path,
+    ty: &'a FullType,
+    names: Vec<&'a str>,
+    depth: usize,
+}
 
-/// Queues `inner` below `path` unless its type is already on the way down.
-fn queue<'a>(next: &mut Level<'a>, path: &[Seg], names: &[&'a str], seg: Seg, inner: &'a FullType) {
+/// Queues `inner` below `frame` unless its type is already on the way down.
+fn queue<'a>(next: &mut Vec<Frame<'a>>, frame: &Frame<'a>, seg: Seg, inner: &'a FullType) {
     let Some(name) = inner.name.as_deref() else {
         return;
     };
-    if !names.contains(&name) {
-        next.push((join(path, seg), inner, [names, &[name]].concat()));
+    if frame.names.contains(&name) {
+        return;
     }
+    let level = usize::from(matches!(seg, Seg::Field(_)));
+    next.push(Frame {
+        path: join(&frame.path, seg),
+        ty: inner,
+        names: [&frame.names[..], &[name]].concat(),
+        depth: frame.depth + level,
+    });
 }
 
-fn select_all_up_to(schema: &Schema, root: &TreeRoot, limit: usize) -> AllLeaves {
+fn select_all_up_to(
+    schema: &Schema,
+    root: &TreeRoot,
+    with_variables: bool,
+    limit: usize,
+    depth: usize,
+) -> AllLeaves {
     let mut out = AllLeaves {
         selection: Selection::default(),
         capped: false,
@@ -494,34 +526,40 @@ fn select_all_up_to(schema: &Schema, root: &TreeRoot, limit: usize) -> AllLeaves
     let Some(start_name) = start.name.as_deref() else {
         return out;
     };
-    let mut level: Vec<(Path, &FullType, Vec<&str>)> = vec![(Path::new(), start, vec![start_name])];
+    let mut level = vec![Frame {
+        path: Path::new(),
+        ty: start,
+        names: vec![start_name],
+        depth: 0,
+    }];
     while !level.is_empty() {
-        let mut next = Level::new();
-        for (path, ty, names) in &level {
-            for field in ty.fields.iter().flatten() {
+        let mut next = Vec::new();
+        for frame in &level {
+            for field in frame.ty.fields.iter().flatten() {
+                if !with_variables && field.args.iter().any(|arg| arg.is_required()) {
+                    continue;
+                }
                 let target = field.ty.named().and_then(|name| schema.type_by_name(name));
                 match target {
-                    Some(inner) if is_composite(inner.kind) => queue(
-                        &mut next,
-                        path,
-                        names,
-                        Seg::Field(field.name.clone()),
-                        inner,
-                    ),
+                    Some(inner) if is_composite(inner.kind) => {
+                        if frame.depth + 1 < depth {
+                            queue(&mut next, frame, Seg::Field(field.name.clone()), inner);
+                        }
+                    }
                     _ => {
                         if out.selection.leaf_count() >= limit {
                             out.capped = true;
                             return out;
                         }
                         out.selection
-                            .insert(join(path, Seg::Field(field.name.clone())));
+                            .insert(join(&frame.path, Seg::Field(field.name.clone())));
                     }
                 }
             }
-            for possible in ty.possible_types.iter().flatten() {
+            for possible in frame.ty.possible_types.iter().flatten() {
                 let inner = possible.named().and_then(|name| schema.type_by_name(name));
                 if let (Some(name), Some(inner)) = (possible.named(), inner) {
-                    queue(&mut next, path, names, Seg::Branch(name.to_string()), inner);
+                    queue(&mut next, frame, Seg::Branch(name.to_string()), inner);
                 }
             }
         }
@@ -1007,9 +1045,13 @@ mod tests {
     }
 
     fn all(operation: &str) -> Vec<String> {
+        paths(operation, true)
+    }
+
+    fn paths(operation: &str, with_variables: bool) -> Vec<String> {
         let schema = design_schema();
         let root = root(&schema, operation);
-        let mut found: Vec<String> = select_all(&schema, &root)
+        let mut found: Vec<String> = select_all(&schema, &root, with_variables)
             .selection
             .leaves()
             .map(|path| {
@@ -1066,7 +1108,7 @@ mod tests {
     fn select_all_has_nothing_for_scalar_operations_and_type_trees() {
         assert!(all("Query.version").is_empty());
         let schema = design_schema();
-        let found = select_all(&schema, &TreeRoot::Type("User".to_string()));
+        let found = select_all(&schema, &TreeRoot::Type("User".to_string()), true);
         assert!(found.selection.is_empty());
         assert!(!found.capped);
     }
@@ -1075,7 +1117,7 @@ mod tests {
     fn select_all_generates_a_valid_query_without_optional_arguments() {
         let schema = design_schema();
         let root = root(&schema, "Query.me");
-        let all = select_all(&schema, &root);
+        let all = select_all(&schema, &root, true);
         let op = root.operation().unwrap();
         let query = crate::querygen::generate(&schema, op, &all.selection).unwrap();
         // Only the required arguments: `posts(first)` and `post(id)`.
@@ -1088,10 +1130,41 @@ mod tests {
     fn a_limit_keeps_the_shallowest_fields_and_says_it_was_reached() {
         let schema = design_schema();
         let root = root(&schema, "Query.me");
-        let found = select_all_up_to(&schema, &root, 3);
+        let found = select_all_up_to(&schema, &root, true, 3, 3);
         assert!(found.capped);
         assert_eq!(found.selection.leaf_count(), 3);
         assert!(found.selection.leaves().all(|path| path.len() == 1));
-        assert!(!select_all_up_to(&schema, &root, 7).capped);
+        assert!(!select_all_up_to(&schema, &root, true, 7, 3).capped);
+    }
+
+    #[test]
+    fn select_all_without_variables_skips_fields_with_required_arguments_and_what_is_below() {
+        // `posts(first: Int!)` and `post(id: ID!)` need variables.
+        assert_eq!(paths("Query.me", false), ["id", "name", "role"]);
+    }
+
+    #[test]
+    fn the_operations_own_arguments_stay_without_variables_too() {
+        let found = paths("Query.node", false);
+        assert!(found.contains(&"id".to_string()));
+        assert!(found.contains(&"on:User.name".to_string()));
+        assert!(!found.contains(&"on:User.posts.title".to_string()));
+    }
+
+    #[test]
+    fn select_all_stops_at_the_depth_and_branches_are_not_a_level() {
+        let schema = design_schema();
+        let me = root(&schema, "Query.me");
+        let names = |found: AllLeaves| found.selection.leaf_count();
+        assert_eq!(names(select_all_up_to(&schema, &me, true, 1_000, 1)), 3);
+        assert_eq!(names(select_all_up_to(&schema, &me, true, 1_000, 2)), 7);
+
+        // search { ... on User { name posts { id } } }: `posts.id` is two levels, however
+        // many branches lie on the way.
+        let search = root(&schema, "Query.search");
+        let one = select_all_up_to(&schema, &search, true, 1_000, 1);
+        assert!(one.selection.leaves().all(|path| path.len() == 2));
+        let two = select_all_up_to(&schema, &search, true, 1_000, 2);
+        assert!(two.selection.leaves().any(|path| path.len() == 3));
     }
 }
