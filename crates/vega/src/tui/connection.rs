@@ -172,8 +172,6 @@ impl Modal {
         }
     }
 
-    // Used by the profile picker; remove this allow when it is wired in.
-    #[allow(dead_code)]
     /// The connection modal for editing a saved profile: its name is filled in.
     pub fn for_profile(name: &str, settings: &Settings) -> Self {
         let mut modal = Self::new(settings);

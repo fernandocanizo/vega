@@ -16,6 +16,7 @@ use vega_core::selection::{self, NodeKind, Path, Row, Seg, Selection, TreeRoot};
 use vega_core::variables::{self, Editor, State, Values};
 
 use crate::tui::connection::{Modal, Outcome};
+use crate::tui::profiles::{Entry, Outcome as PickerOutcome, Picker};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -35,6 +36,14 @@ pub enum Action {
         name: String,
         settings: Settings,
     },
+    /// Read the saved profiles and open the picker.
+    OpenPicker,
+    /// Connect to this saved profile.
+    ConnectProfile(String),
+    /// Open this saved profile in the connection modal.
+    EditProfile(String),
+    /// Delete this saved profile (config entry and keyring secret).
+    DeleteProfile(String),
 }
 
 /// A request ready to be sent; `seq` ties the result to it.
@@ -95,6 +104,7 @@ pub const BROWSE_KEYS: &[(&str, &str)] = &[
     ("Paste", "Import a query (GraphQL or a JSON request body)"),
     ("Ctrl-R", "Refresh the schema"),
     ("Ctrl-K", "Open the connection (endpoint and credentials)"),
+    ("Ctrl-P", "Open the saved server profiles"),
     ("? / F1", "Show or hide this help"),
     ("Ctrl-Q", "Quit"),
 ];
@@ -131,6 +141,7 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
     ("q / Ctrl-Q", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
     ("Ctrl-K", "Open the connection (endpoint and credentials)"),
+    ("Ctrl-P", "Open the saved server profiles"),
     ("h / ? / F1", "Show or hide this help"),
 ];
 
@@ -156,6 +167,7 @@ pub const RUN_KEYS: &[(&str, &str)] = &[
     ("q / Ctrl-Q", "Quit"),
     ("Ctrl-R", "Refresh the schema"),
     ("Ctrl-K", "Open the connection (endpoint and credentials)"),
+    ("Ctrl-P", "Open the saved server profiles"),
     ("h / ? / F1", "Show or hide this help"),
 ];
 
@@ -232,6 +244,8 @@ pub struct App {
     settings: Settings,
     /// The connection modal, when it is open.
     pub modal: Option<Modal>,
+    /// The saved-profile picker, when it is open.
+    pub picker: Option<Picker>,
     /// False until a schema has been loaded for the current endpoint.
     loaded: bool,
     fetched_at: u64,
@@ -301,6 +315,7 @@ impl App {
                 key_only: false,
             },
             modal: None,
+            picker: None,
             loaded: true,
             fetched_at,
             query: String::new(),
@@ -415,6 +430,36 @@ impl App {
         }
     }
 
+    /// The loop read the profiles: show the picker.
+    pub fn open_picker(&mut self, entries: Vec<Entry>) {
+        self.picker = Some(Picker::new(entries, self.profile_name.clone()));
+    }
+
+    /// The loop could not do what the picker asked; the picker stays open.
+    pub fn profile_notice(&mut self, message: &str) {
+        self.notice = Some(message.to_string());
+    }
+
+    /// The loop read the profile's settings: it becomes the current connection.
+    pub fn connect_profile(&mut self, name: String, settings: Settings) -> Action {
+        self.picker = None;
+        self.profile_name = Some(name);
+        self.apply_connection(settings)
+    }
+
+    /// The loop read the profile's settings: edit them in the connection modal.
+    pub fn edit_profile(&mut self, name: String, settings: Settings) {
+        self.picker = None;
+        self.modal = Some(Modal::for_profile(&name, &settings));
+    }
+
+    /// A deleted profile that was in use stays connected, but is no longer named.
+    pub fn profile_deleted(&mut self, name: &str) {
+        if self.profile_name.as_deref() == Some(name) {
+            self.profile_name = None;
+        }
+    }
+
     /// The server shown in the status bar: the profile name when there is one.
     fn server_label(&self) -> String {
         match &self.profile_name {
@@ -463,6 +508,31 @@ impl App {
                 Outcome::Save(name, settings) => Action::SaveProfile { name, settings },
             };
         }
+        if let Some(picker) = self.picker.as_mut() {
+            if ctrl && key.code == KeyCode::Char('q') {
+                self.should_quit = true;
+                return Action::None;
+            }
+            return match picker.handle_key(key) {
+                PickerOutcome::Open => Action::None,
+                PickerOutcome::Close => {
+                    self.picker = None;
+                    Action::None
+                }
+                PickerOutcome::Connect(name) => Action::ConnectProfile(name),
+                PickerOutcome::Edit(name) => Action::EditProfile(name),
+                PickerOutcome::Delete(name) => Action::DeleteProfile(name),
+                PickerOutcome::New => {
+                    self.picker = None;
+                    self.modal = Some(Modal::new(&Settings {
+                        uri: String::new(),
+                        headers: Vec::new(),
+                        key_only: false,
+                    }));
+                    Action::None
+                }
+            };
+        }
         if key.modifiers.contains(KeyModifiers::ALT) && key.code == KeyCode::Char('a') {
             return self.toggle_select_all(true);
         }
@@ -488,6 +558,10 @@ impl App {
                     self.help_open = false;
                     self.modal = Some(Modal::new(&self.settings));
                     Action::None
+                }
+                KeyCode::Char('p') => {
+                    self.help_open = false;
+                    Action::OpenPicker
                 }
                 _ => Action::None,
             };
@@ -1268,18 +1342,20 @@ impl App {
             format_age(age)
         );
         match &self.refresh {
-            RefreshState::Idle => text.push_str(" · Ctrl-R refresh · Ctrl-K connection"),
+            RefreshState::Idle => {
+                text.push_str(" · Ctrl-R refresh · Ctrl-K connection · Ctrl-P profiles")
+            }
             RefreshState::Running => text.push_str(" · refreshing…"),
             RefreshState::CacheWriteFailed(message) => {
                 let first_line = message.lines().next().unwrap_or("");
                 text.push_str(&format!(
-                    " · schema updated but the cache could not be written: {first_line} · Ctrl-R refresh · Ctrl-K connection"
+                    " · schema updated but the cache could not be written: {first_line} · Ctrl-R refresh · Ctrl-K connection · Ctrl-P profiles"
                 ));
             }
             RefreshState::Failed(message) => {
                 let first_line = message.lines().next().unwrap_or("");
                 text.push_str(&format!(
-                    " · Ctrl-R retry · Ctrl-K connection · refresh failed: {first_line}"
+                    " · Ctrl-R retry · Ctrl-K connection · Ctrl-P profiles · refresh failed: {first_line}"
                 ));
             }
         }
@@ -1290,7 +1366,7 @@ impl App {
     fn status_without_schema(&self) -> (String, StatusLevel) {
         if self.settings.uri.is_empty() {
             return (
-                "no endpoint · Ctrl-K connection".to_string(),
+                "no endpoint · Ctrl-K connection · Ctrl-P profiles".to_string(),
                 StatusLevel::Notice,
             );
         }
@@ -1299,12 +1375,12 @@ impl App {
             RefreshState::Failed(message) => {
                 let first_line = message.lines().next().unwrap_or("");
                 format!(
-                    "{} · Ctrl-K connection · Ctrl-R retry · could not load the schema: {first_line}",
+                    "{} · Ctrl-K connection · Ctrl-P profiles · Ctrl-R retry · could not load the schema: {first_line}",
                     self.server_label()
                 )
             }
             _ => format!(
-                "{} · no schema loaded · Ctrl-K connection · Ctrl-R load",
+                "{} · no schema loaded · Ctrl-K connection · Ctrl-P profiles · Ctrl-R load",
                 self.server_label()
             ),
         };
@@ -1340,6 +1416,85 @@ mod tests {
 
     fn ctrl(app: &mut App, c: char) -> Action {
         app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    fn entry(name: &str) -> crate::tui::profiles::Entry {
+        crate::tui::profiles::Entry {
+            name: name.to_string(),
+            uri: format!("https://{name}/graphql"),
+            kind: vega_core::profile::Kind::NoAuth,
+        }
+    }
+
+    #[test]
+    fn ctrl_p_asks_the_loop_to_list_the_profiles() {
+        let mut app = app();
+        assert_eq!(ctrl(&mut app, 'p'), Action::OpenPicker);
+    }
+
+    #[test]
+    fn the_picker_routes_its_outcomes_to_actions() {
+        let mut app = app();
+        app.open_picker(vec![entry("a")]);
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            Action::ConnectProfile("a".into())
+        );
+        assert_eq!(
+            press(&mut app, KeyCode::Char('e')),
+            Action::EditProfile("a".into())
+        );
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(
+            press(&mut app, KeyCode::Char('y')),
+            Action::DeleteProfile("a".into())
+        );
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn n_in_the_picker_opens_an_empty_connection_modal() {
+        let mut app = app();
+        app.open_picker(vec![]);
+        press(&mut app, KeyCode::Char('n'));
+        assert!(app.picker.is_none());
+        assert_eq!(app.modal.as_ref().unwrap().uri().display(), "");
+    }
+
+    #[test]
+    fn connecting_to_a_profile_loads_its_schema_and_names_it_in_the_status() {
+        let mut app = app();
+        app.open_picker(vec![entry("a")]);
+        let action = app.connect_profile("a".into(), settings("https://other/graphql"));
+        assert_eq!(action, Action::Load);
+        assert!(app.picker.is_none());
+        assert!(app.status(0).0.contains("a (other)"), "{}", app.status(0).0);
+    }
+
+    #[test]
+    fn editing_a_profile_opens_the_modal_with_its_name() {
+        let mut app = app();
+        app.open_picker(vec![entry("a")]);
+        app.edit_profile("a".into(), settings("https://x/graphql"));
+        assert!(app.picker.is_none());
+        assert_eq!(app.modal.as_ref().unwrap().name().display(), "a");
+    }
+
+    #[test]
+    fn the_status_bar_names_the_profiles_key() {
+        assert!(app().status(1_000).0.contains("Ctrl-P profiles"));
+        assert_eq!(
+            empty_app().status(0).0,
+            "no endpoint · Ctrl-K connection · Ctrl-P profiles"
+        );
+    }
+
+    #[test]
+    fn every_help_table_lists_ctrl_p() {
+        for keys in [BROWSE_KEYS, DESIGN_KEYS, RUN_KEYS] {
+            assert!(keys.iter().any(|(key, _)| *key == "Ctrl-P"));
+        }
     }
 
     fn type_text(app: &mut App, text: &str) {
@@ -1468,7 +1623,10 @@ mod tests {
         let app = empty_app();
         assert!(app.modal.is_some());
         assert!(!app.is_loaded());
-        assert_eq!(app.status(0).0, "no endpoint · Ctrl-K connection");
+        assert_eq!(
+            app.status(0).0,
+            "no endpoint · Ctrl-K connection · Ctrl-P profiles"
+        );
         assert!(app.hits.is_empty());
     }
 
