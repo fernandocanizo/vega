@@ -134,3 +134,5 @@ You do not need any environment variable to start vega. With no endpoint configu
 - `server answered HTTP 401` or `403`: the header name or value is wrong. Check which header the server expects.
 - `VEGA_GRAPHQL_HEADERS line N: expected `Name: value``: line N has no colon, an empty value or an invalid header name (names allow letters, digits and ``!#$%&'*+-.^_`|~``).
 - `the key header name is not valid`: fix `--key-header` or `VEGA_GRAPHQL_KEY_HEADER`.
+
+A saved profile's URI is written to `config.toml` in the clear. Vega refuses to save a URI that has a username or password; also do not put a token in its query string.
