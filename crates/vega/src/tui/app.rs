@@ -794,19 +794,23 @@ impl App {
         if all.selection.is_empty() {
             return self.notify("nothing to select");
         }
-        if design.selection.has_all_leaves_of(&all.selection) {
-            design.selection.clear_leaves();
+        if design.selection.has_all_of(&all.selection) {
+            design.selection.remove_all_of(&all.selection);
             return self.notify("cleared the selection");
         }
-        design.selection.extend_leaves(&all.selection);
+        design.selection.extend_with(&all.selection);
         let count = design.selection.leaf_count();
-        self.notice = Some(if all.capped {
-            format!(
-                "selected {count} fields; the limit was reached, the deepest fields are left out"
-            )
-        } else {
-            format!("selected {count} fields")
-        });
+        let args = design.selection.optional_args().count();
+        let mut message = format!("selected {count} fields");
+        match args {
+            0 => {}
+            1 => message.push_str(" and 1 optional argument"),
+            n => message.push_str(&format!(" and {n} optional arguments")),
+        }
+        if all.capped {
+            message.push_str("; the limit was reached, the deepest fields are left out");
+        }
+        self.notice = Some(message);
         Action::None
     }
 
@@ -3247,5 +3251,36 @@ mod tests {
         let before = app.design.as_ref().unwrap().cursor;
         press(&mut app, KeyCode::Char(' '));
         assert_eq!(app.design.as_ref().unwrap().cursor, before);
+    }
+
+    #[test]
+    fn alt_a_also_opts_in_the_optional_arguments_and_ctrl_a_does_not() {
+        let mut app = design_app();
+        type_text(&mut app, "users");
+        press(&mut app, KeyCode::Enter);
+        ctrl(&mut app, 'a');
+        assert_eq!(app.status(1_000).0, "selected 3 fields");
+        assert!(!query_text(&app).contains("$role"));
+
+        alt(&mut app, 'a');
+        assert_eq!(
+            app.status(1_000).0,
+            "selected 7 fields and 6 optional arguments"
+        );
+        let text = query_text(&app);
+        for wanted in [
+            "$role: Role",
+            "$active: Boolean",
+            "$limit: Int! = 10",
+            "users(role: $role",
+        ] {
+            assert!(text.contains(wanted), "{wanted} in {text}");
+        }
+        // The six optional arguments, plus `posts(first)` and `post(id)`.
+        assert_eq!(app.variable_rows().len(), 8);
+
+        alt(&mut app, 'a');
+        assert_eq!(app.status(1_000).0, "cleared the selection");
+        assert!(app.variable_rows().is_empty());
     }
 }

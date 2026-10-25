@@ -426,19 +426,21 @@ impl Selection {
         self.leaves.iter()
     }
 
-    /// True when every leaf of `other` is selected here too.
-    pub fn has_all_leaves_of(&self, other: &Selection) -> bool {
-        other.leaves.is_subset(&self.leaves)
+    /// True when every leaf and opted-in argument of `other` is selected here too.
+    pub fn has_all_of(&self, other: &Selection) -> bool {
+        other.leaves.is_subset(&self.leaves) && other.args.is_subset(&self.args)
     }
 
-    /// Selects every leaf of `other`, keeping what was selected.
-    pub fn extend_leaves(&mut self, other: &Selection) {
+    /// Selects everything `other` selects, keeping what was selected.
+    pub fn extend_with(&mut self, other: &Selection) {
         self.leaves.extend(other.leaves.iter().cloned());
+        self.args.extend(other.args.iter().cloned());
     }
 
-    /// Unselects every leaf, keeping the opted-in optional arguments.
-    pub fn clear_leaves(&mut self) {
-        self.leaves.clear();
+    /// Unselects everything `other` selects, keeping the rest.
+    pub fn remove_all_of(&mut self, other: &Selection) {
+        self.leaves.retain(|path| !other.leaves.contains(path));
+        self.args.retain(|path| !other.args.contains(path));
     }
 
     pub fn leaf_count(&self) -> usize {
@@ -470,9 +472,9 @@ pub struct AllLeaves {
 /// entering a type already on the path from the root (a field of `User` that leads back to
 /// `User` is skipped, siblings of the same type are not). Fields that take a required
 /// argument need a variable: they are skipped, with everything below them, unless
-/// `with_variables`. The operation's own arguments stay either way. Breadth first, so the
-/// limit cuts the deepest fields. Optional arguments are not touched; type trees and
-/// scalar operations have nothing to select.
+/// `with_variables`, which also opts in every optional argument of the fields it selects.
+/// The operation's own required arguments stay either way. Breadth first, so the limit
+/// cuts the deepest fields. Type trees and scalar operations have no fields to select.
 pub fn select_all(schema: &Schema, root: &TreeRoot, with_variables: bool) -> AllLeaves {
     select_all_up_to(
         schema,
@@ -526,13 +528,20 @@ fn select_all_up_to(
     let Some(start_name) = start.name.as_deref() else {
         return out;
     };
+    // Optional arguments to opt in, with the field they belong to.
+    let mut optional: Vec<(Path, Path)> = Vec::new();
+    if with_variables {
+        if let Some(field) = root.operation().and_then(|op| op.field(schema)) {
+            optional_args(&mut optional, &Path::new(), field);
+        }
+    }
     let mut level = vec![Frame {
         path: Path::new(),
         ty: start,
         names: vec![start_name],
         depth: 0,
     }];
-    while !level.is_empty() {
+    'levels: while !level.is_empty() {
         let mut next = Vec::new();
         for frame in &level {
             for field in frame.ty.fields.iter().flatten() {
@@ -549,11 +558,15 @@ fn select_all_up_to(
                     _ => {
                         if out.selection.leaf_count() >= limit {
                             out.capped = true;
-                            return out;
+                            break 'levels;
                         }
                         out.selection
                             .insert(join(&frame.path, Seg::Field(field.name.clone())));
                     }
+                }
+                if with_variables {
+                    let path = join(&frame.path, Seg::Field(field.name.clone()));
+                    optional_args(&mut optional, &path, field);
                 }
             }
             for possible in frame.ty.possible_types.iter().flatten() {
@@ -565,7 +578,24 @@ fn select_all_up_to(
         }
         level = next;
     }
+    // The arguments of a field that ended up with nothing selected go with it.
+    let composite_root = is_composite(start.kind);
+    for (field, arg) in optional {
+        if out.selection.has_under(&field) || (field.is_empty() && !composite_root) {
+            out.selection.insert_arg(arg);
+        }
+    }
     out
+}
+
+/// Notes the optional arguments of `field`, which sits at `path`.
+fn optional_args(found: &mut Vec<(Path, Path)>, path: &Path, field: &Field) {
+    for arg in field.args.iter().filter(|arg| !arg.is_required()) {
+        found.push((
+            path.clone(),
+            join(&join(path, Seg::Args), Seg::Arg(arg.name.clone())),
+        ));
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -1166,5 +1196,62 @@ mod tests {
         assert!(one.selection.leaves().all(|path| path.len() == 2));
         let two = select_all_up_to(&schema, &search, true, 1_000, 2);
         assert!(two.selection.leaves().any(|path| path.len() == 3));
+    }
+
+    fn arg_names(operation: &str, with_variables: bool) -> Vec<String> {
+        let schema = design_schema();
+        let root = root(&schema, operation);
+        select_all(&schema, &root, with_variables)
+            .selection
+            .optional_args()
+            .map(|path| match path.last() {
+                Some(Seg::Arg(name)) => name.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn only_select_all_with_variables_opts_in_the_optional_arguments() {
+        assert!(arg_names("Query.users", false).is_empty());
+        let mut with = arg_names("Query.users", true);
+        with.sort();
+        assert_eq!(with, ["active", "filter", "floor", "ids", "limit", "role"]);
+    }
+
+    #[test]
+    fn optional_arguments_of_a_scalar_operation_are_opted_in_without_any_field() {
+        assert_eq!(arg_names("Query.postCount", true), ["since"]);
+        assert!(arg_names("Query.postCount", false).is_empty());
+    }
+
+    #[test]
+    fn required_arguments_are_never_opted_in_and_they_make_variables_anyway() {
+        let schema = design_schema();
+        let root = root(&schema, "Query.search");
+        let found = select_all(&schema, &root, true);
+        assert_eq!(arg_names("Query.search", true), ["first"]);
+        let query = crate::querygen::generate(&schema, root.operation().unwrap(), &found.selection)
+            .unwrap();
+        assert!(
+            query.text.contains("search(term: $term, first: $first)"),
+            "{}",
+            query.text
+        );
+    }
+
+    #[test]
+    fn a_selection_that_has_everything_tells_apart_fields_from_arguments() {
+        let schema = design_schema();
+        let root = root(&schema, "Query.users");
+        let safe = select_all(&schema, &root, false).selection;
+        let full = select_all(&schema, &root, true).selection;
+        assert!(full.has_all_of(&safe));
+        assert!(!safe.has_all_of(&full));
+        let mut mixed = safe.clone();
+        mixed.extend_with(&full);
+        assert!(mixed.has_all_of(&full));
+        mixed.remove_all_of(&full);
+        assert!(mixed.is_empty());
     }
 }
