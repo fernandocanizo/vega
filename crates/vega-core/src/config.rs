@@ -120,6 +120,26 @@ pub fn resolve_settings(
     Ok(settings)
 }
 
+/// Layers a saved profile under the flags and the environment: the profile's endpoint
+/// applies when no flag or variable names one, and its credentials apply unless the
+/// environment supplies credentials of its own (those replace them entirely).
+pub fn with_profile(settings: Settings, profile: Settings, env_credentials: bool) -> Settings {
+    let uri = if settings.uri.is_empty() {
+        profile.uri
+    } else {
+        settings.uri
+    };
+    if env_credentials {
+        Settings { uri, ..settings }
+    } else {
+        Settings {
+            uri,
+            headers: profile.headers,
+            key_only: profile.key_only,
+        }
+    }
+}
+
 /// Reads `<config_dir>/config.toml`; a missing file is not an error.
 pub fn load_file_config(config_dir: &Path) -> Result<FileConfig, ConfigError> {
     let path = config_dir.join("config.toml");
@@ -380,6 +400,54 @@ mod tests {
             settings.headers,
             vec![Header::new("X-API-Key", "secret").unwrap()]
         );
+    }
+
+    fn profile_settings(kind_only: bool, headers: Vec<Header>) -> Settings {
+        Settings {
+            uri: "https://p/graphql".to_string(),
+            headers,
+            key_only: kind_only,
+        }
+    }
+
+    #[test]
+    fn a_profile_fills_the_endpoint_and_credentials_the_flags_leave_open() {
+        let flags =
+            resolve_settings_partial(None, None, AuthInput::default(), FileConfig::default())
+                .unwrap();
+        let profile = profile_settings(true, vec![header("X-Token", "k")]);
+        assert_eq!(with_profile(flags, profile.clone(), false), profile);
+    }
+
+    #[test]
+    fn the_uri_flag_beats_the_profile_endpoint() {
+        let flags = resolve_settings_partial(
+            s("https://flag/graphql"),
+            None,
+            AuthInput::default(),
+            FileConfig::default(),
+        )
+        .unwrap();
+        let profile = profile_settings(true, vec![header("X-Token", "k")]);
+        let merged = with_profile(flags, profile, false);
+        assert_eq!(merged.uri, "https://flag/graphql");
+        assert_eq!(merged.headers, vec![header("X-Token", "k")]);
+    }
+
+    #[test]
+    fn environment_credentials_replace_the_profile_ones() {
+        let env = resolve_settings_partial(
+            None,
+            None,
+            auth(Some("env-key"), None, None),
+            FileConfig::default(),
+        )
+        .unwrap();
+        let profile = profile_settings(false, vec![header("Authorization", "Bearer p")]);
+        let merged = with_profile(env.clone(), profile, true);
+        assert_eq!(merged.uri, "https://p/graphql");
+        assert_eq!(merged.headers, env.headers);
+        assert!(merged.key_only);
     }
 
     #[test]
