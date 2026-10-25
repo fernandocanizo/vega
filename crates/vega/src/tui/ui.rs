@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::tui::app::{list_offset, App, Edit, Focus, RunState, StatusLevel, VariableRow};
 use crate::tui::connection::{AuthType, Field, Focus as ModalFocus, Modal};
+use crate::tui::profiles::Picker;
 use vega_core::response::LineKind;
 use vega_core::selection::{NodeKind, Row};
 use vega_core::variables::{self, State};
@@ -25,10 +26,10 @@ fn focus_style() -> Style {
     Style::default().fg(FOCUS).add_modifier(Modifier::REVERSED)
 }
 
-/// A modal (the connection modal or the help) has the input focus, so nothing behind it
+/// A modal (the connection modal, the profile picker or the help) has the input focus, so nothing behind it
 /// shows focus marks or the terminal cursor.
 fn overlay_open(app: &App) -> bool {
-    app.modal.is_some() || app.help_open
+    app.modal.is_some() || app.picker.is_some() || app.help_open
 }
 
 /// Version shown in the help modal title.
@@ -82,6 +83,9 @@ pub fn draw(frame: &mut Frame, app: &App, now: u64) {
     }
     if let Some(modal) = &app.modal {
         draw_connection(frame, area, modal);
+    }
+    if let Some(picker) = &app.picker {
+        draw_picker(frame, area, picker);
     }
 }
 
@@ -192,10 +196,84 @@ fn draw_connection(frame: &mut Frame, area: Rect, modal: &Modal) {
         None => Line::raw(""),
     };
     let hint = Line::styled(
-        "Tab next · Enter connect · Ctrl-S save · Esc cancel · Ctrl-T reveal · Ctrl-N add row",
+        "Tab next · Enter connect · Ctrl-S save · Esc cancel · Ctrl-T show · Ctrl-N row",
         Style::default().fg(Color::DarkGray),
     );
     frame.render_widget(Paragraph::new(vec![footer, hint]), rows[3]);
+}
+
+fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker) {
+    let width = area.width.min(76);
+    let height = area.height.min(16);
+    let popup = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Profiles")
+        .border_style(Style::default().fg(FOCUS));
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(inner);
+    let row_width = usize::from(rows[0].width);
+
+    let mut lines: Vec<Line> = Vec::new();
+    if picker.entries().is_empty() {
+        lines.push(Line::raw("No saved servers. n to add one"));
+    }
+    for (index, entry) in picker.entries().iter().enumerate() {
+        let mark = if picker.current() == Some(entry.name.as_str()) {
+            "● "
+        } else {
+            "  "
+        };
+        let text = clip(
+            &format!(
+                "{mark}{}  {}  ({})",
+                entry.name,
+                entry.uri,
+                entry.kind.as_str()
+            ),
+            row_width,
+        );
+        lines.push(if index == picker.selected() {
+            Line::styled(text, focus_style())
+        } else {
+            Line::raw(text)
+        });
+    }
+    frame.render_widget(Paragraph::new(lines), rows[0]);
+
+    let question = match (picker.confirming(), picker.entries().get(picker.selected())) {
+        (true, Some(entry)) => Line::styled(
+            clip(&format!("Delete {}? y/N", entry.name), row_width),
+            Style::default().fg(Color::Yellow),
+        ),
+        _ => Line::raw(""),
+    };
+    let hint = Line::styled(
+        "↑↓ move · Enter connect · e edit · n new · d delete · Esc close",
+        Style::default().fg(Color::DarkGray),
+    );
+    frame.render_widget(Paragraph::new(vec![question, hint]), rows[1]);
+}
+
+/// `text` cut to `width` characters, ending in an ellipsis when it was longer.
+fn clip(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    match width {
+        0 => String::new(),
+        _ => {
+            let head: String = text.chars().take(width - 1).collect();
+            format!("{head}…")
+        }
+    }
 }
 
 fn draw_types(frame: &mut Frame, area: Rect, modal: &Modal) {
@@ -583,11 +661,13 @@ fn tree_item(app: &App, row: &Row) -> ListItem<'static> {
 mod tests {
     use super::*;
     use crate::tui::app::App;
+    use crate::tui::profiles::Entry;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, style::Color, Terminal};
     use std::time::Duration;
     use vega_core::client::Response;
     use vega_core::config::Settings;
+    use vega_core::profile::Kind;
     use vega_core::response;
     use vega_core::schema::IntrospectionResponse;
 
@@ -654,6 +734,123 @@ mod tests {
         let text = screen(&render(&app, 1_000));
         assert!(text.contains("Save as"), "{text}");
         assert!(text.contains("Ctrl-S save"), "{text}");
+    }
+
+    fn render_sized(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app, 1_000)).unwrap();
+        terminal
+    }
+
+    fn rows_of(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content()
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
+    fn entry(name: &str, uri: &str, kind: Kind) -> Entry {
+        Entry {
+            name: name.into(),
+            uri: uri.into(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn the_connection_hint_fits_an_80_column_terminal() {
+        let mut app = app();
+        ctrl(&mut app, 'k');
+        let text = screen(&render_sized(&app, 80, 30));
+        assert!(text.contains("Ctrl-S save"), "{text}");
+        assert!(text.contains("Ctrl-N row"), "{text}");
+    }
+
+    #[test]
+    fn the_picker_lists_profiles_without_any_secret() {
+        let mut app = app();
+        app.open_picker(vec![
+            entry("staging", "https://s/graphql", Kind::ApiKey),
+            entry("open", "https://o/graphql", Kind::NoAuth),
+        ]);
+        let text = screen(&render(&app, 1_000));
+        assert!(text.contains("Profiles"), "{text}");
+        assert!(text.contains("staging"), "{text}");
+        assert!(text.contains("https://s/graphql"), "{text}");
+        assert!(text.contains("api_key"), "{text}");
+        assert!(text.contains("Enter connect"), "{text}");
+    }
+
+    #[test]
+    fn the_picker_marks_the_current_profile() {
+        let mut app = app();
+        let _ = app.profile_saved("open".into(), empty_settings());
+        app.open_picker(vec![
+            entry("staging", "https://s/graphql", Kind::ApiKey),
+            entry("open", "https://o/graphql", Kind::NoAuth),
+            entry("prod", "https://p/graphql", Kind::Headers),
+        ]);
+        let rows = rows_of(&render_sized(&app, 80, 30));
+        let dump = rows.join("\n");
+        let marked: Vec<&String> = rows.iter().filter(|row| row.contains('●')).collect();
+        assert_eq!(marked.len(), 1, "{dump}");
+        assert!(marked[0].contains("open"), "{dump}");
+    }
+
+    #[test]
+    fn an_empty_picker_says_how_to_add_a_server() {
+        let mut app = app();
+        app.open_picker(vec![]);
+        assert!(screen(&render(&app, 1_000)).contains("No saved servers. n to add one"));
+    }
+
+    #[test]
+    fn the_delete_question_is_shown() {
+        let mut app = app();
+        app.open_picker(vec![entry("a", "https://a/graphql", Kind::NoAuth)]);
+        key(&mut app, KeyCode::Char('d'));
+        assert!(screen(&render(&app, 1_000)).contains("Delete a? y/N"));
+    }
+
+    #[test]
+    fn a_long_uri_is_cut_with_an_ellipsis_inside_the_picker() {
+        let uri = format!("https://{}/graphql", "a".repeat(200));
+        let mut app = app();
+        app.open_picker(vec![
+            entry("long", &uri, Kind::NoAuth),
+            entry("next", "https://n/graphql", Kind::NoAuth),
+        ]);
+        let rows = rows_of(&render_sized(&app, 80, 30));
+        let dump = rows.join("\n");
+        let long = rows.iter().find(|row| row.contains("long")).unwrap();
+        assert!(long.contains('…'), "{dump}");
+        let next = rows.iter().find(|row| row.contains("next")).unwrap();
+        assert!(next.contains("https://n/graphql"), "{dump}");
+        assert!(!dump.contains(&uri), "{dump}");
+        // The right border of the popup is intact on the long row.
+        assert!(long.trim_end().ends_with('│'), "{dump}");
+        assert!(screen(&render_sized(&app, 80, 30)).contains("Esc close"));
+    }
+
+    #[test]
+    fn nothing_behind_the_picker_shows_focus_or_the_cursor() {
+        let area = Rect::new(0, 1, 100, 3);
+        let mut app = app();
+        assert!(!overlay_open(&app));
+        app.open_picker(vec![entry("a", "https://a/graphql", Kind::NoAuth)]);
+        assert!(overlay_open(&app));
+        assert_eq!(search_cursor(&app, area), None);
+        let terminal = render(&app, 1_000);
+        let buffer = terminal.backend().buffer();
+        // The search box border sits on rows 1..4, left of the popup.
+        for y in 1..4 {
+            for x in 0..10 {
+                assert_ne!(buffer[(x, y)].fg, FOCUS, "focus mark at ({x}, {y})");
+            }
+        }
     }
 
     #[test]

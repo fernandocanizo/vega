@@ -43,23 +43,19 @@ impl Picker {
         }
     }
 
-    #[allow(dead_code)] // used by the draw code in the next commit
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
 
-    #[allow(dead_code)] // used by the draw code in the next commit
     pub fn selected(&self) -> usize {
         self.selected
     }
 
-    #[allow(dead_code)] // used by the draw code in the next commit
     /// The profile in use, which the list marks.
     pub fn current(&self) -> Option<&str> {
         self.current.as_deref()
     }
 
-    #[allow(dead_code)] // used by the draw code in the next commit
     /// True while the delete question is showing.
     pub fn confirming(&self) -> bool {
         self.confirming
