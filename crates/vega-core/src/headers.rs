@@ -83,6 +83,15 @@ pub fn parse_lines(text: &str) -> Result<Vec<Header>, HeaderError> {
     Ok(headers)
 }
 
+/// The inverse of `parse_lines`: one `Name: value` per line.
+pub fn to_lines(headers: &[Header]) -> String {
+    headers
+        .iter()
+        .map(|header| format!("{}: {}", header.name(), header.value()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Adds `overrides` after `base`, dropping any header of `base` (or an earlier override)
 /// that has the same name, compared case-insensitively.
 pub fn merge(mut base: Vec<Header>, overrides: Vec<Header>) -> Vec<Header> {
@@ -372,5 +381,16 @@ mod tests {
     fn basic_allows_colons_and_empty_passwords_in_the_password() {
         assert_eq!(basic("user", "").value(), "Basic dXNlcjo=");
         assert_eq!(basic("user", "a:b").value(), "Basic dXNlcjphOmI=");
+    }
+
+    #[test]
+    fn to_lines_is_the_inverse_of_parse_lines() {
+        let headers = vec![
+            Header::new("X-Token", "t-1").unwrap(),
+            Header::new("X-Org", "acme").unwrap(),
+        ];
+        assert_eq!(to_lines(&headers), "X-Token: t-1\nX-Org: acme");
+        assert_eq!(parse_lines(&to_lines(&headers)).unwrap(), headers);
+        assert_eq!(to_lines(&[]), "");
     }
 }

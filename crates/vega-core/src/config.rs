@@ -2,17 +2,24 @@
 //! Header values are read from the environment only and are never persisted.
 
 use std::{
+    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
 };
 
 use serde::Deserialize;
 
-use crate::headers::{self, Header, HeaderError, DEFAULT_KEY_HEADER};
+use crate::{
+    headers::{self, Header, HeaderError, DEFAULT_KEY_HEADER},
+    profile::Profile,
+};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct FileConfig {
     pub uri: Option<String>,
+    /// Saved servers. The credentials of a profile are in the OS keyring, not here.
+    #[serde(default)]
+    pub profiles: BTreeMap<String, Profile>,
 }
 
 /// Credentials as read from the environment and flags. It has no `Debug` on purpose.
@@ -143,6 +150,7 @@ mod tests {
     fn file(uri: &str) -> FileConfig {
         FileConfig {
             uri: Some(uri.to_string()),
+            ..Default::default()
         }
     }
 
