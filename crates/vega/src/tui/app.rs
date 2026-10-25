@@ -372,7 +372,11 @@ impl App {
             modal.paste(text);
             return;
         }
-        if self.help_open || self.confirm.is_some() || self.pending_import.is_some() {
+        if self.help_open
+            || self.picker.is_some()
+            || self.confirm.is_some()
+            || self.pending_import.is_some()
+        {
             return;
         }
         let in_text_editor = self
@@ -1488,6 +1492,15 @@ mod tests {
             empty_app().status(0).0,
             "no endpoint · Ctrl-K connection · Ctrl-P profiles"
         );
+    }
+
+    #[test]
+    fn a_paste_while_the_picker_is_open_goes_nowhere() {
+        let mut app = app();
+        app.open_picker(vec![entry("a")]);
+        app.handle_paste("abc");
+        assert_eq!(app.query, "");
+        assert!(app.picker.is_some());
     }
 
     #[test]
