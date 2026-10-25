@@ -373,11 +373,25 @@ fn has_focus(app: &App, focus: Focus) -> bool {
             .is_some_and(|design| design.focus == focus)
 }
 
+/// True when Ctrl-A selects every field: composing the query of an operation.
+fn selects_all(app: &App) -> bool {
+    app.design
+        .as_ref()
+        .is_some_and(|design| !design.read_only() && design.run.is_none())
+}
+
 /// The Details tree over the Description pane.
 fn draw_details(frame: &mut Frame, area: Rect, app: &App, rows: &[Row], cursor: Option<usize>) {
     let parts = split_column(area);
 
-    let block = pane("Details", has_focus(app, Focus::Details));
+    let mut block = pane("Details", has_focus(app, Focus::Details));
+    if selects_all(app) {
+        let hint = Span::styled(
+            "Select all: Ctrl-A",
+            Style::default().add_modifier(Modifier::DIM),
+        );
+        block = block.title_top(Line::from(hint).right_aligned());
+    }
     if rows.is_empty() {
         frame.render_widget(Paragraph::new("No matches").block(block), parts[0]);
     } else {
@@ -1185,5 +1199,53 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
             terminal.draw(|frame| draw(frame, &app, 1_000)).unwrap();
         }
+    }
+
+    #[test]
+    fn the_details_corner_hints_at_select_all_only_while_composing_an_operation() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let key = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+
+        let browse = app();
+        assert!(!screen(&render(&browse, 1_000)).contains("Select all"));
+
+        let mut design = app();
+        for c in "userread".chars() {
+            key(&mut design, KeyCode::Char(c));
+        }
+        key(&mut design, KeyCode::Enter);
+        let text = screen(&render(&design, 1_000));
+        assert!(text.contains("Select all: Ctrl-A"), "{text}");
+
+        // On the same row as the title, to the right of it.
+        let terminal = render(&design, 1_000);
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        let rows: Vec<String> = buffer
+            .content()
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+        let row = rows.iter().find(|row| row.contains("Details")).unwrap();
+        assert!(
+            row.find("Details") < row.find("Select all: Ctrl-A"),
+            "{row}"
+        );
+    }
+
+    #[test]
+    fn a_type_tree_has_no_select_all_hint() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = app();
+        for c in "user".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let type_hit = app.hits.iter().position(|h| h.path == "User").unwrap();
+        for _ in 0..type_hit {
+            app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.design.as_ref().unwrap().read_only());
+        assert!(!screen(&render(&app, 1_000)).contains("Select all"));
     }
 }
