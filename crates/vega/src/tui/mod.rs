@@ -4,6 +4,7 @@
 pub mod app;
 pub mod clipboard;
 pub mod connection;
+pub mod profiles;
 pub mod ui;
 
 use std::{
@@ -171,17 +172,73 @@ fn dispatch(app: &mut App, action: Action, ctx: &mut Ctx) -> Option<Action> {
                 Some(dir) => {
                     profile::save(dir, &KeyringStore, &name, &settings).map_err(|e| e.to_string())
                 }
-                None => Err(
-                    "cannot locate the config directory: set XDG_CONFIG_HOME or HOME".to_string(),
-                ),
+                None => Err(NO_CONFIG_DIR.to_string()),
             };
             match result {
                 Ok(()) => return Some(app.profile_saved(name, settings)),
                 Err(message) => app.profile_save_failed(message),
             }
         }
+        Action::OpenPicker => match read_profiles(ctx.config_dir) {
+            Ok(file) => app.open_picker(entries_of(&file)),
+            Err(message) => app.profile_notice(&message),
+        },
+        Action::ConnectProfile(name) => match connect_profile(ctx.config_dir, &name) {
+            Ok(connected) => {
+                if connected.missing_credentials {
+                    app.profile_notice(&format!("no stored credentials found for profile {name}"));
+                }
+                return Some(app.connect_profile(name, connected.settings));
+            }
+            Err(message) => app.profile_notice(&message),
+        },
+        Action::EditProfile(name) => match connect_profile(ctx.config_dir, &name) {
+            Ok(connected) => app.edit_profile(name, connected.settings),
+            Err(message) => app.profile_notice(&message),
+        },
+        Action::DeleteProfile(name) => {
+            let deleted = match ctx.config_dir {
+                Some(dir) => profile::delete(dir, &KeyringStore, &name).map_err(|e| e.to_string()),
+                None => Err(NO_CONFIG_DIR.to_string()),
+            };
+            match deleted {
+                Ok(()) => {
+                    app.profile_deleted(&name);
+                    match read_profiles(ctx.config_dir) {
+                        Ok(file) => app.open_picker(entries_of(&file)),
+                        Err(message) => app.profile_notice(&message),
+                    }
+                }
+                Err(message) => app.profile_notice(&message),
+            }
+        }
     }
     None
+}
+
+const NO_CONFIG_DIR: &str = "cannot locate the config directory: set XDG_CONFIG_HOME or HOME";
+
+fn read_profiles(config_dir: Option<&Path>) -> Result<vega_core::config::FileConfig, String> {
+    match config_dir {
+        Some(dir) => vega_core::config::load_file_config(dir).map_err(|e| e.to_string()),
+        None => Err(NO_CONFIG_DIR.to_string()),
+    }
+}
+
+fn entries_of(file: &vega_core::config::FileConfig) -> Vec<profiles::Entry> {
+    file.profiles
+        .iter()
+        .map(|(name, profile)| profiles::Entry {
+            name: name.clone(),
+            uri: profile.uri.clone(),
+            kind: profile.kind,
+        })
+        .collect()
+}
+
+fn connect_profile(config_dir: Option<&Path>, name: &str) -> Result<profile::Connected, String> {
+    let file = read_profiles(config_dir)?;
+    profile::connect(&file, &KeyringStore, name).map_err(|e| e.to_string())
 }
 
 /// Fetches the schema of the app's current endpoint on a background thread.
