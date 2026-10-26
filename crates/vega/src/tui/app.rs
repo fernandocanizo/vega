@@ -128,7 +128,7 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
         "Alt-A",
         "Select every field, variables included (again to clear)",
     ),
-    ("Tab", "Move to the next pane"),
+    ("Tab / Shift-Tab", "Move to the next or previous pane"),
     ("Enter", "Edit the highlighted variable (Variables pane)"),
     ("Ctrl-C", "Copy the query as a GraphQL document"),
     (
@@ -152,7 +152,7 @@ pub const RUN_KEYS: &[(&str, &str)] = &[
         "Scroll the response (move through the variables when they have focus)",
     ),
     ("PgUp / PgDn", "Scroll the response ten lines"),
-    ("Tab", "Switch between Response and Variables"),
+    ("Tab / Shift-Tab", "Switch between Response and Variables"),
     ("Enter", "Edit the highlighted variable (Variables pane)"),
     (
         "Ctrl-C",
@@ -769,6 +769,7 @@ impl App {
             KeyCode::Char('r') => return self.request_run(),
             KeyCode::Esc => self.leave_design(),
             KeyCode::Tab => self.next_focus(),
+            KeyCode::BackTab => self.previous_focus(),
             KeyCode::Up if self.focused(Focus::Variables) => self.move_var_cursor(-1),
             KeyCode::Down if self.focused(Focus::Variables) => self.move_var_cursor(1),
             KeyCode::Enter if self.focused(Focus::Variables) => self.start_edit(),
@@ -804,7 +805,7 @@ impl App {
                     design.focus = Focus::Details;
                 }
             }
-            KeyCode::Tab => {
+            KeyCode::Tab | KeyCode::BackTab => {
                 if let Some(design) = self.design.as_mut() {
                     design.focus = if design.focus == Focus::Response {
                         Focus::Variables
@@ -1077,6 +1078,21 @@ impl App {
             Focus::Details => Focus::Query,
             Focus::Query => Focus::Variables,
             Focus::Variables | Focus::Response => Focus::Details,
+        };
+    }
+
+    /// Shift-Tab: the way back through the panes Tab walks.
+    fn previous_focus(&mut self) {
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
+        if design.read_only() {
+            return;
+        }
+        design.focus = match design.focus {
+            Focus::Details => Focus::Variables,
+            Focus::Query => Focus::Details,
+            Focus::Variables | Focus::Response => Focus::Query,
         };
     }
 
@@ -2185,6 +2201,34 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Backspace);
         assert_eq!(app.query, "m");
+    }
+
+    #[test]
+    fn shift_tab_cycles_the_focus_the_other_way() {
+        use super::Focus;
+        let mut app = design_app();
+        open_me(&mut app);
+        let focus = |app: &App| app.design.as_ref().unwrap().focus;
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(focus(&app), Focus::Query);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(focus(&app), Focus::Details);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(focus(&app), Focus::Variables);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(focus(&app), Focus::Query);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(focus(&app), Focus::Details);
+    }
+
+    #[test]
+    fn shift_tab_does_nothing_on_a_type_tree() {
+        use super::Focus;
+        let mut app = design_app();
+        type_text(&mut app, "postinput");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.design.as_ref().unwrap().focus, Focus::Details);
     }
 
     #[test]
