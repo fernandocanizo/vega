@@ -1,6 +1,6 @@
 # Send a User-Agent header so GitHub's GraphQL API can be used
 
-Status: open
+Status: done
 Related: 0006 (find public GraphQL servers)
 
 ## Problem
@@ -27,3 +27,7 @@ Every request carries `User-Agent: vega/<version>` (the crate version, no OS or 
 ## Out of scope
 
 - Letting the user override the User-Agent.
+
+## Resolution
+
+Every request sends `User-Agent: vega/<version>`: the product token and the version, the form RFC 9110 section 10.1.5 describes, with nothing about the system or the user. A browser string was not used: the RFC discourages claiming to be another implementation. A `User-Agent` header given in `VEGA_GRAPHQL_HEADERS` or the connection modal replaces it, so the override that was out of scope here already works.

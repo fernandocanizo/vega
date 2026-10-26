@@ -336,3 +336,31 @@ fn other_statuses_are_still_not_redirects() {
         "{err}"
     );
 }
+
+fn user_agents(request: &str) -> Vec<String> {
+    request
+        .lines()
+        .filter(|line| line.to_lowercase().starts_with("user-agent:"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn every_request_names_vega_and_its_version() {
+    let (uri, rx) = serve_once("200 OK", FIXTURE.to_string());
+    fetch_introspection(&uri, &[]).unwrap();
+    let request = rx.recv().unwrap();
+    assert_eq!(
+        user_agents(&request),
+        [format!("user-agent: vega/{}", env!("CARGO_PKG_VERSION"))]
+    );
+}
+
+#[test]
+fn a_user_agent_header_from_the_user_replaces_the_default() {
+    let (uri, rx) = serve_once("200 OK", FIXTURE.to_string());
+    let custom = vec![Header::new("User-Agent", "my-tool/1").unwrap()];
+    fetch_introspection(&uri, &custom).unwrap();
+    let request = rx.recv().unwrap();
+    assert_eq!(user_agents(&request), ["user-agent: my-tool/1"]);
+}

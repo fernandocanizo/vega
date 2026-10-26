@@ -117,10 +117,16 @@ struct Raw {
     location: Option<String>,
 }
 
+/// Sent with every request: some servers (GitHub's) reject a request without one. Only
+/// the product and its version, as RFC 9110 section 10.1.5 asks. A `User-Agent` header
+/// given by the user replaces it.
+const USER_AGENT: &str = concat!("vega/", env!("CARGO_PKG_VERSION"));
+
 /// POSTs `body` as JSON with `headers`. Redirects are not followed: see
 /// `ClientError::Redirected`.
 fn post(uri: &str, headers: &[Header], body: &Value) -> Result<Raw, reqwest::Error> {
     let client = reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
