@@ -48,7 +48,7 @@ fn type_detail(ty: &FullType) -> Detail {
 
     for field in ty.fields.iter().flatten() {
         nav.push(NavItem {
-            label: field.signature(),
+            label: field.listing_label(),
             target: field.ty.named().map(str::to_string),
             description: field.description.clone().unwrap_or_default(),
         });
@@ -182,6 +182,29 @@ mod tests {
         assert_eq!(labels(&d), ["id: ID!", "name: String", "role: Role"]);
         assert_eq!(d.nav[2].target.as_deref(), Some("Role"));
         assert_eq!(d.nav[2].description, "Access role.");
+    }
+
+    #[test]
+    fn a_deprecated_field_is_marked_in_the_type_listing() {
+        let mut schema = fixture_schema();
+        let user = schema
+            .types
+            .iter_mut()
+            .find(|ty| ty.name.as_deref() == Some("User"))
+            .unwrap();
+        for field in user.fields.iter_mut().flatten() {
+            field.is_deprecated = field.name == "name";
+        }
+        let d = detail(&schema, "User").unwrap();
+        assert_eq!(
+            labels(&d),
+            ["id: ID!", "name: String [deprecated]", "role: Role"]
+        );
+        // A single field keeps its plain title; the reason is in the body.
+        assert_eq!(
+            detail(&schema, "User.name").unwrap().title,
+            "User.name: String"
+        );
     }
 
     #[test]

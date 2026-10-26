@@ -298,7 +298,7 @@ pub fn children(schema: &Schema, root: &TreeRoot, path: &[Seg]) -> Vec<Node> {
     for field in ty.fields.iter().flatten() {
         nodes.push(Node {
             path: join(path, Seg::Field(field.name.clone())),
-            label: field.signature(),
+            label: field.listing_label(),
             kind: node_kind(schema, field.ty.named(), &names),
             description: field.description.clone().unwrap_or_default(),
             has_args: !field.args.is_empty(),
@@ -734,6 +734,22 @@ mod tests {
         assert_eq!(user.kind, NodeKind::Composite);
         let id = root_node(&schema, &root(&schema, "ID")).unwrap();
         assert_eq!(id.kind, NodeKind::Leaf);
+    }
+
+    #[test]
+    fn a_deprecated_field_is_marked_in_the_tree() {
+        let mut schema = design_schema();
+        let user = schema
+            .types
+            .iter_mut()
+            .find(|ty| ty.name.as_deref() == Some("User"))
+            .unwrap();
+        for field in user.fields.iter_mut().flatten() {
+            field.is_deprecated = field.name == "name";
+        }
+        let kids = children(&schema, &root(&schema, "Query.me"), &[]);
+        assert_eq!(kids[0].label, "id: ID!");
+        assert_eq!(kids[1].label, "name: String [deprecated]");
     }
 
     #[test]

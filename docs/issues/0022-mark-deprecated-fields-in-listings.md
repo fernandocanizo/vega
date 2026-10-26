@@ -1,6 +1,6 @@
 # Mark deprecated fields where fields are listed
 
-Status: open
+Status: done
 Related: 0006 (find public GraphQL servers)
 
 ## Problem
@@ -23,3 +23,7 @@ Not checked: enum values (GitLab has 237 deprecated ones), which `describe` does
 ## Expected behavior
 
 A deprecated field is marked in the `--describe` type listing and in the TUI field rows, with the reason available as it is today. Decide the marker (text such as `[deprecated]`, or dim style) with the colors and themes work in 0011.
+
+## Decision
+
+Deprecated fields get the text ` [deprecated]` after their signature in the `--describe` type listing and in the TUI tree rows. Text works in any terminal and in `--json`; a dim style can be added with the themes in 0011. Enum values are not marked yet.
