@@ -86,6 +86,18 @@ fn http_errors_surface_status_and_body() {
 }
 
 #[test]
+fn html_error_pages_are_not_printed() {
+    let page = "<!DOCTYPE html>\n<html><head><title>No such app</title></head></html>";
+    let (uri, _rx) = serve_once("404 Not Found", page.to_string());
+    let err = fetch_introspection(&uri, &[]).unwrap_err();
+    assert_eq!(err.to_string(), "server answered HTTP 404");
+
+    let (uri, _rx) = serve_once("404 Not Found", "  <head><script>x</script>".to_string());
+    let err = fetch_introspection(&uri, &[]).unwrap_err();
+    assert_eq!(err.to_string(), "server answered HTTP 404");
+}
+
+#[test]
 fn graphql_errors_in_a_200_response_are_reported() {
     let body = r#"{"errors":[{"message":"Introspection is disabled"}]}"#.to_string();
     let (uri, _rx) = serve_once("200 OK", body);

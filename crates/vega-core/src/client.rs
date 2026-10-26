@@ -41,11 +41,27 @@ fragment TypeRef on __Type {
 }
 "#;
 
+/// The body after the status, unless it is empty or an HTML page (whose start says nothing).
+fn body_suffix(body: &str) -> String {
+    if body.is_empty() || looks_like_html(body) {
+        String::new()
+    } else {
+        format!(": {body}")
+    }
+}
+
+fn looks_like_html(body: &str) -> bool {
+    let start = body.trim_start().to_ascii_lowercase();
+    ["<!doctype", "<html", "<head", "<body"]
+        .iter()
+        .any(|tag| start.starts_with(tag))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("request failed")]
     Http(#[from] reqwest::Error),
-    #[error("server answered HTTP {status}: {body}")]
+    #[error("server answered HTTP {status}{}", body_suffix(.body))]
     Status { status: u16, body: String },
     /// Redirects are never followed: the request would become a `GET`, and the headers
     /// (which hold the credentials) would go to whatever origin the answer names.
