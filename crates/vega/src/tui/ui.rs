@@ -191,13 +191,14 @@ fn draw_connection(frame: &mut Frame, area: Rect, modal: &Modal) {
     draw_types(frame, columns[0], modal);
     draw_form(frame, columns[1], modal);
 
+    let dim = Style::default().fg(Color::DarkGray);
     let footer = match modal.error() {
         Some(message) => Line::styled(message.to_string(), Style::default().fg(Color::Red)),
-        None => Line::raw(""),
+        None => Line::styled("Ctrl-T show secret · Ctrl-N add row", dim),
     };
     let hint = Line::styled(
-        "Tab next · Enter connect · Ctrl-S save · Esc cancel · Ctrl-T show · Ctrl-N row",
-        Style::default().fg(Color::DarkGray),
+        "Tab next · Enter connect · Ctrl-S save · Ctrl-P profiles · Esc cancel",
+        dim,
     );
     frame.render_widget(Paragraph::new(vec![footer, hint]), rows[3]);
 }
@@ -784,7 +785,8 @@ mod tests {
         ctrl(&mut app, 'k');
         let text = screen(&render_sized(&app, 80, 30));
         assert!(text.contains("Ctrl-S save"), "{text}");
-        assert!(text.contains("Ctrl-N row"), "{text}");
+        assert!(text.contains("Ctrl-P profiles"), "{text}");
+        assert!(text.contains("Ctrl-N add row"), "{text}");
     }
 
     #[test]

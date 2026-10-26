@@ -62,13 +62,19 @@ pub fn run(
     config_dir: Option<PathBuf>,
     startup: Startup,
 ) -> anyhow::Result<()> {
-    let app = match entry {
+    let mut app = match entry {
         Some(entry) => App::new(entry.response.data.schema, &settings.uri, entry.fetched_at)
             .with_settings(settings),
         None => App::empty(settings),
     }
     .with_profile_name(startup.profile_name)
     .with_notice(startup.notice);
+    // With no endpoint the modal is open; saved profiles make the picker the first screen.
+    if app.modal.is_some() {
+        if let Ok(file) = read_profiles(config_dir.as_deref()) {
+            app.start_on_profiles(entries_of(&file));
+        }
+    }
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let previous_hook = std::panic::take_hook();

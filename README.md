@@ -100,7 +100,7 @@ uri = "https://example.com/graphql"
 
 A profile is a named server: an endpoint plus its credentials. The endpoint and the authentication kind are stored in `config.toml`; the secret goes to the OS keyring, never to a file. Saving needs a keyring (Secret Service on Linux, such as GNOME Keyring or KWallet).
 
-- `Ctrl-P`: open the profile picker. `Enter` connects, `e` edits, `n` adds, `d` deletes (after `y`), `Esc` closes.
+- `Ctrl-P`: open the profile picker. `Enter` connects, `e` edits, `n` adds, `d` deletes (after `y`), `Esc` closes. Vega starts on the picker when no endpoint is configured and profiles are saved; `Ctrl-P` also works inside the connection modal.
 - `Ctrl-S` in the connection modal (`Ctrl-K`): save the connection under the name typed in "Save as" and connect.
 - `--profile NAME` or `VEGA_PROFILE=NAME`: start with that profile, also for `--search`, `--describe`, `--query` and `--run`.
 

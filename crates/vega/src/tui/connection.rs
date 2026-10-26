@@ -100,6 +100,8 @@ pub enum Outcome {
     Submit(Settings),
     /// Ctrl-S on a valid form with a valid name: connect and save as a profile.
     Save(String, Settings),
+    /// Ctrl-P: switch to the profile picker.
+    Profiles,
 }
 
 /// A header name field followed by its value field, for Custom headers rows.
@@ -231,6 +233,7 @@ impl Modal {
             }
             KeyCode::Char('n') if ctrl => self.add_row(),
             KeyCode::Char('s') if ctrl => return self.save(),
+            KeyCode::Char('p') if ctrl => return Outcome::Profiles,
             KeyCode::Char(c) if !ctrl && !c.is_control() => self.insert(c.encode_utf8(&mut [0; 4])),
             _ => {}
         }
@@ -453,6 +456,7 @@ mod tests {
             Outcome::Open => panic!("still open"),
             Outcome::Cancel => panic!("cancelled"),
             Outcome::Save(..) => panic!("saved"),
+            Outcome::Profiles => panic!("asked for the picker"),
         }
     }
 
@@ -795,6 +799,12 @@ mod tests {
         let mut modal = modal();
         type_text(&mut modal, "abc");
         assert_eq!(modal.uri().display(), "https://x.example.com/graphql");
+    }
+
+    #[test]
+    fn ctrl_p_asks_for_the_profile_picker() {
+        let mut modal = Modal::new(&settings("https://x/graphql", vec![], false));
+        assert_eq!(ctrl(&mut modal, 'p'), Outcome::Profiles);
     }
 
     #[test]
