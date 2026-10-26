@@ -1,6 +1,6 @@
 # Do not panic when stdout is closed early
 
-Status: open
+Status: done
 Related: 0006 (find public GraphQL servers)
 
 ## Problem
