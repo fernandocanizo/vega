@@ -10,7 +10,7 @@ It is a general GraphQL tool: it works with any server that allows introspection
 - Open any result to read its documentation, arguments and return type, and follow a field to its type to keep exploring.
 - Interactive TUI, plus command line flags (`--search`, `--describe`, `--json`) so scripts and coding agents can use the same features.
 - Caches the schema per server, shows how old the cache is, and refreshes it on demand.
-- Build a query by picking fields from a tree: expand with →, select with Space (optional arguments too; the cursor moves on to the next field, opening collapsed objects on the way), edit the typed variables with Tab and Enter, and watch the generated query update, press r to run it and read the response (mutations ask first).
+- Build a query by picking fields from a tree: expand with →, select with Space (optional arguments too; the cursor moves on to the next field, opening collapsed objects on the way), edit the typed variables with Tab (Shift-Tab goes back through the panes) and Enter, and watch the generated query update, press r to run it and read the response (mutations ask first).
 - Copy the query being built as a GraphQL document with Ctrl-C, or with its variables as the JSON body of a request with Ctrl-J, and paste a query from outside (GraphQL or a JSON body) to rebuild it from the schema.
 
 Building, editing and running queries works; subscriptions can be built but not run.
