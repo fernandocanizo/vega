@@ -129,6 +129,14 @@ pub const DESIGN_KEYS: &[(&str, &str)] = &[
         "Select every field, variables included (again to clear)",
     ),
     ("Tab / Shift-Tab", "Move to the next or previous pane"),
+    (
+        "/",
+        "Find in the tree: type to jump to the first match, Enter or Esc to stop",
+    ),
+    (
+        "Ctrl-G",
+        "Jump to the next match; at the end it says so, and the next press starts over",
+    ),
     ("Enter", "Edit the highlighted variable (Variables pane)"),
     ("Ctrl-C", "Copy the query as a GraphQL document"),
     (
@@ -180,6 +188,30 @@ pub enum Focus {
     Response,
 }
 
+/// A search in the Details tree (`/`): the cursor jumps to the first row whose label
+/// contains the text; Ctrl-G goes on to the next one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Find {
+    pub text: String,
+    /// The text is still being typed: every key is part of it.
+    pub typing: bool,
+    /// Ctrl-G said there are no more matches; the next press starts over.
+    pub at_end: bool,
+}
+
+/// The first row at or after `from` whose label contains `needle`, ignoring case.
+fn first_match(rows: &[Row], needle: &str, from: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    let needle = needle.to_lowercase();
+    rows.iter()
+        .enumerate()
+        .skip(from)
+        .find(|(_, row)| row.node.label.to_lowercase().contains(&needle))
+        .map(|(index, _)| index)
+}
+
 /// An edit in progress in the Variables pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
@@ -201,6 +233,8 @@ pub struct VariableRow {
 /// The tree being explored: which root, which nodes are expanded, where the cursor is.
 #[derive(Debug, Clone)]
 pub struct DesignState {
+    /// A search in the tree; its matches are jumped to, nothing is filtered.
+    pub find: Option<Find>,
     pub root: TreeRoot,
     pub expanded: BTreeSet<Path>,
     pub cursor: usize,
@@ -218,6 +252,7 @@ impl DesignState {
         let mut expanded = BTreeSet::new();
         expanded.insert(Path::new());
         Self {
+            find: None,
             root,
             expanded,
             cursor: 0,
@@ -385,6 +420,7 @@ impl App {
             return;
         }
         if self.help_open
+            || self.is_finding()
             || self.picker.is_some()
             || self.confirm.is_some()
             || self.pending_import.is_some()
@@ -585,6 +621,10 @@ impl App {
                     self.jump_to_end(true);
                     Action::None
                 }
+                KeyCode::Char('g') => {
+                    self.find_next();
+                    Action::None
+                }
                 KeyCode::Char('k') => {
                     self.help_open = false;
                     self.modal = Some(Modal::new(&self.settings));
@@ -621,6 +661,10 @@ impl App {
         }
         if self.is_editing() {
             self.handle_edit_key(key.code);
+            return Action::None;
+        }
+        if self.is_finding() {
+            self.handle_find_key(key.code);
             return Action::None;
         }
         let opens_help = match key.code {
@@ -770,6 +814,7 @@ impl App {
             KeyCode::Esc => self.leave_design(),
             KeyCode::Tab => self.next_focus(),
             KeyCode::BackTab => self.previous_focus(),
+            KeyCode::Char('/') if self.focused(Focus::Details) => self.start_find(),
             KeyCode::Up if self.focused(Focus::Variables) => self.move_var_cursor(-1),
             KeyCode::Down if self.focused(Focus::Variables) => self.move_var_cursor(1),
             KeyCode::Enter if self.focused(Focus::Variables) => self.start_edit(),
@@ -1096,6 +1141,86 @@ impl App {
         };
     }
 
+    fn is_finding(&self) -> bool {
+        self.design
+            .as_ref()
+            .and_then(|design| design.find.as_ref())
+            .is_some_and(|find| find.typing)
+    }
+
+    /// `/` in the Details pane: a new search; the keys that follow are its text.
+    fn start_find(&mut self) {
+        if let Some(design) = self.design.as_mut() {
+            design.find = Some(Find {
+                typing: true,
+                ..Find::default()
+            });
+        }
+    }
+
+    fn handle_find_key(&mut self, code: KeyCode) {
+        let Some(find) = self.design.as_mut().and_then(|design| design.find.as_mut()) else {
+            return;
+        };
+        match code {
+            KeyCode::Enter | KeyCode::Esc => {
+                find.typing = false;
+                if find.text.is_empty() {
+                    if let Some(design) = self.design.as_mut() {
+                        design.find = None;
+                    }
+                }
+                return;
+            }
+            KeyCode::Backspace => {
+                find.text.pop();
+            }
+            KeyCode::Char(c) if !c.is_control() => find.text.push(c),
+            _ => return,
+        }
+        find.at_end = false;
+        let rows = self.design_rows();
+        if let Some(design) = self.design.as_mut() {
+            let first = design
+                .find
+                .as_ref()
+                .and_then(|find| first_match(&rows, &find.text, 0));
+            if let Some(index) = first {
+                design.cursor = index;
+            }
+        }
+    }
+
+    /// Ctrl-G: the next match after the cursor. At the last one it says so and stays;
+    /// pressed again it starts over from the first.
+    fn find_next(&mut self) {
+        if self.help_open || self.in_run_mode() || !self.focused(Focus::Details) {
+            return;
+        }
+        let rows = self.design_rows();
+        let Some(design) = self.design.as_mut() else {
+            return;
+        };
+        let (text, at_end) = match &design.find {
+            Some(find) if !find.text.is_empty() => (find.text.clone(), find.at_end),
+            _ => return,
+        };
+        let from = if at_end { 0 } else { design.cursor + 1 };
+        let found = first_match(&rows, &text, from);
+        if let Some(find) = design.find.as_mut() {
+            find.at_end = found.is_none() && first_match(&rows, &text, 0).is_some();
+        }
+        match found {
+            Some(index) => design.cursor = index,
+            None if first_match(&rows, &text, 0).is_none() => {
+                self.notice = Some(format!("No match for \"{text}\""));
+            }
+            None => {
+                self.notice = Some("No more matches · Ctrl-G again starts over".to_string());
+            }
+        }
+    }
+
     fn rerun_search(&mut self) {
         self.hits = search::search(&self.schema, &self.query);
         self.hit_index = 0;
@@ -1373,6 +1498,20 @@ impl App {
         }
         if let Some(notice) = &self.notice {
             return (notice.clone(), StatusLevel::Notice);
+        }
+        if let Some(find) = self
+            .design
+            .as_ref()
+            .and_then(|design| design.find.as_ref())
+            .filter(|find| find.typing)
+        {
+            let missed =
+                !find.text.is_empty() && first_match(&self.design_rows(), &find.text, 0).is_none();
+            let suffix = if missed { " · no match" } else { "" };
+            return (
+                format!("Find: {}▏{suffix} · Enter to stop", find.text),
+                StatusLevel::Notice,
+            );
         }
         if !self.loaded {
             return self.status_without_schema();
@@ -2229,6 +2368,167 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::BackTab);
         assert_eq!(app.design.as_ref().unwrap().focus, Focus::Details);
+    }
+
+    // The rows of `Query.me` in the design fixture: 0 `me: User`, 1 `id: ID!`,
+    // 2 `name: String`, 3 `role: Role`, 4 `friends: [User!]!`,
+    // 5 `posts(first: Int!): [Post!]!`, 6 `post(id: ID!): Post`.
+
+    fn cursor(app: &App) -> usize {
+        app.design.as_ref().unwrap().cursor
+    }
+
+    fn find(app: &mut App, text: &str) {
+        press(app, KeyCode::Char('/'));
+        type_text(app, text);
+    }
+
+    #[test]
+    fn slash_then_typing_jumps_to_the_first_match_as_you_type() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Char('/'));
+        assert!(app.status(0).0.starts_with("Find: "), "{}", app.status(0).0);
+        type_text(&mut app, "n");
+        assert_eq!(cursor(&app), 2); // name: String
+        type_text(&mut app, "a");
+        assert_eq!(cursor(&app), 2);
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        type_text(&mut app, "ro");
+        assert_eq!(cursor(&app), 3); // role: Role
+    }
+
+    #[test]
+    fn the_match_is_the_first_one_from_the_top_and_ignores_case() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        find(&mut app, "USER");
+        assert_eq!(cursor(&app), 0);
+    }
+
+    #[test]
+    fn while_typing_every_key_is_text_and_afterwards_the_commands_return() {
+        let mut app = design_app();
+        open_me(&mut app);
+        find(&mut app, "qrh? ");
+        assert!(!app.should_quit);
+        assert!(!app.help_open);
+        assert!(
+            app.status(0).0.starts_with("Find: qrh? "),
+            "{}",
+            app.status(0).0
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.status(0).0.starts_with("Find:"));
+        press(&mut app, KeyCode::Char('h'));
+        assert!(app.help_open);
+    }
+
+    #[test]
+    fn esc_ends_the_search_and_leaves_the_cursor_where_it_jumped() {
+        let mut app = design_app();
+        open_me(&mut app);
+        find(&mut app, "role");
+        press(&mut app, KeyCode::Esc);
+        assert!(
+            app.design.is_some(),
+            "Esc ends the search, it does not leave"
+        );
+        assert_eq!(cursor(&app), 3);
+        assert!(!app.status(0).0.starts_with("Find:"));
+    }
+
+    #[test]
+    fn a_search_with_no_match_says_so_and_keeps_the_cursor() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        find(&mut app, "zzz");
+        assert_eq!(cursor(&app), 1);
+        assert!(app.status(0).0.contains("no match"), "{}", app.status(0).0);
+        press(&mut app, KeyCode::Enter);
+        ctrl(&mut app, 'g');
+        let (text, level) = app.status(0);
+        assert!(text.contains("No match for \"zzz\""), "{text}");
+        assert_eq!(level, StatusLevel::Notice);
+    }
+
+    #[test]
+    fn ctrl_g_goes_to_the_next_match_warns_at_the_end_and_then_starts_over() {
+        let mut app = design_app();
+        open_me(&mut app);
+        find(&mut app, "user"); // rows 0 and 4
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(cursor(&app), 0);
+
+        ctrl(&mut app, 'g');
+        assert_eq!(cursor(&app), 4);
+
+        ctrl(&mut app, 'g');
+        assert_eq!(cursor(&app), 4, "the warning does not move the cursor");
+        let (text, level) = app.status(0);
+        assert!(text.contains("No more matches"), "{text}");
+        assert_eq!(level, StatusLevel::Notice);
+
+        ctrl(&mut app, 'g');
+        assert_eq!(cursor(&app), 0, "the next press starts over");
+        assert!(!app.status(0).0.contains("No more"));
+
+        ctrl(&mut app, 'g');
+        assert_eq!(cursor(&app), 4, "and it keeps cycling");
+    }
+
+    #[test]
+    fn ctrl_g_works_from_wherever_the_cursor_was_moved_to() {
+        let mut app = design_app();
+        open_me(&mut app);
+        find(&mut app, "user");
+        press(&mut app, KeyCode::Enter);
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(cursor(&app), 5);
+        ctrl(&mut app, 'g');
+        assert!(app.status(0).0.contains("No more matches"));
+        ctrl(&mut app, 'g');
+        assert_eq!(cursor(&app), 0);
+    }
+
+    #[test]
+    fn ctrl_g_without_a_search_does_nothing() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Down);
+        ctrl(&mut app, 'g');
+        assert_eq!(cursor(&app), 1);
+        assert!(!app.status(0).0.contains("match"));
+        // nor in the results list
+        let mut browse = design_app();
+        ctrl(&mut browse, 'g');
+        assert!(browse.design.is_none());
+    }
+
+    #[test]
+    fn the_search_starts_only_with_the_details_pane_focused() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Tab); // Query
+        press(&mut app, KeyCode::Char('/'));
+        assert!(!app.status(0).0.starts_with("Find:"));
+    }
+
+    #[test]
+    fn a_paste_while_typing_a_search_goes_nowhere() {
+        let mut app = design_app();
+        open_me(&mut app);
+        press(&mut app, KeyCode::Char('/'));
+        app.handle_paste("query Me { me { id } }");
+        assert!(app.pending_import.is_none());
     }
 
     #[test]
