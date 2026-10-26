@@ -97,6 +97,15 @@ impl Field {
         };
         format!("{}{}: {}", self.name, args, self.ty.render())
     }
+
+    /// The signature as shown where fields are listed, marked when the field is deprecated.
+    pub fn listing_label(&self) -> String {
+        if self.is_deprecated {
+            format!("{} [deprecated]", self.signature())
+        } else {
+            self.signature()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
