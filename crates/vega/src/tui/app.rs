@@ -446,9 +446,19 @@ impl App {
         }
     }
 
-    /// The loop read the profiles: show the picker.
+    /// The loop read the profiles: show the picker. The connection modal, when it asked
+    /// for the picker, closes only now, so a failed read keeps what was typed.
     pub fn open_picker(&mut self, entries: Vec<Entry>) {
+        self.modal = None;
         self.picker = Some(Picker::new(entries, self.profile_name.clone()));
+    }
+
+    /// Startup with no endpoint opens the connection modal; with saved profiles the
+    /// picker is the better first screen, and `n` in it reaches the modal.
+    pub fn start_on_profiles(&mut self, entries: Vec<Entry>) {
+        if self.modal.is_some() && !entries.is_empty() {
+            self.open_picker(entries);
+        }
     }
 
     /// The loop could not do what the picker asked; the picker stays open.
@@ -526,6 +536,7 @@ impl App {
                     self.apply_connection(settings)
                 }
                 Outcome::Save(name, settings) => Action::SaveProfile { name, settings },
+                Outcome::Profiles => Action::OpenPicker,
             };
         }
         if let Some(picker) = self.picker.as_mut() {
@@ -1678,6 +1689,42 @@ mod tests {
         assert_eq!(list_offset(100, 50, 10), 45);
         assert_eq!(list_offset(100, 50, 20), 40);
         assert_eq!(list_offset(100, 99, 20), 81);
+    }
+
+    #[test]
+    fn ctrl_p_in_the_modal_keeps_it_until_the_picker_opens() {
+        let mut app = app();
+        ctrl(&mut app, 'k');
+        assert_eq!(ctrl(&mut app, 'p'), Action::OpenPicker);
+        // A failed read of the profiles must not lose what was typed.
+        assert!(app.modal.is_some());
+        app.open_picker(vec![entry("a")]);
+        assert!(app.modal.is_none());
+        assert!(app.picker.is_some());
+    }
+
+    #[test]
+    fn with_saved_profiles_an_empty_start_opens_the_picker_not_the_modal() {
+        let mut app = empty_app();
+        assert!(app.modal.is_some());
+        app.start_on_profiles(vec![entry("a")]);
+        assert!(app.modal.is_none());
+        assert!(app.picker.is_some());
+    }
+
+    #[test]
+    fn without_saved_profiles_an_empty_start_keeps_the_modal() {
+        let mut app = empty_app();
+        app.start_on_profiles(vec![]);
+        assert!(app.modal.is_some());
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn a_start_with_an_endpoint_never_opens_the_picker() {
+        let mut app = app();
+        app.start_on_profiles(vec![entry("a")]);
+        assert!(app.picker.is_none());
     }
 
     #[test]
