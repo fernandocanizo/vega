@@ -1,6 +1,6 @@
 # Summarize HTML error pages instead of printing them
 
-Status: open
+Status: done
 Related: 0006 (find public GraphQL servers), 0010 (clear errors)
 
 ## Problem
@@ -26,3 +26,7 @@ Caused by:
 ## Expected behavior
 
 When the body looks like HTML, the message says so and shows the `<title>` if there is one, for example `server answered HTTP 404: an HTML page titled "No such app"`. JSON and plain-text bodies are printed as today. A header value must never appear in the message, as today.
+
+## Decision
+
+When the body starts like an HTML page, the message is only `server answered HTTP 404`: the page is not printed and its title is not extracted. Other bodies are printed as before.
