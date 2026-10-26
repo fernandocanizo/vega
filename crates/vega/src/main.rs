@@ -36,6 +36,24 @@ impl ProfileWarning {
     }
 }
 
+/// Writes to stdout. A closed pipe (`vega ... | head`) ends the process quietly, as the reader
+/// asked; any other write error is returned.
+fn print_text(text: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        result => Ok(result.context("writing to stdout")?),
+    }
+}
+
+fn print_line(text: &str) -> anyhow::Result<()> {
+    print_text(&format!("{text}\n"))
+}
+
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
@@ -144,16 +162,16 @@ fn main() -> anyhow::Result<()> {
     if let Some(text) = &cli.search {
         let hits = search::search(schema, text);
         if cli.json {
-            println!("{}", serde_json::to_string_pretty(&hits)?);
+            print_line(&serde_json::to_string_pretty(&hits)?)?;
         } else {
-            print!("{}", output::hits_text(&hits));
+            print_text(&output::hits_text(&hits))?;
         }
     } else if let Some(target) = &cli.describe {
         let detail = describe::detail(schema, target)?;
         if cli.json {
-            println!("{}", serde_json::to_string_pretty(&detail)?);
+            print_line(&serde_json::to_string_pretty(&detail)?)?;
         } else {
-            print!("{}", describe::render_text(&detail));
+            print_text(&describe::render_text(&detail))?;
         }
     } else if let Some(target) = &cli.query {
         let args = QueryArgs {
@@ -225,12 +243,11 @@ fn print_query(schema: &Schema, settings: &Settings, args: &QueryArgs) -> anyhow
         return run_query(schema, settings, &operation, &query, &values, args);
     }
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output::query_json(&query, &states)?)?
-        );
+        print_line(&serde_json::to_string_pretty(&output::query_json(
+            &query, &states,
+        )?)?)?;
     } else {
-        print!("{}", output::query_text(&query, &states));
+        print_text(&output::query_text(&query, &states))?;
     }
     Ok(())
 }
@@ -257,12 +274,11 @@ fn run_query(
     let response = client::execute(&settings.uri, &settings.headers, &body)
         .with_context(|| format!("running {} on {}", query.operation_name, settings.uri))?;
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output::run_json(query, &response))?
-        );
+        print_line(&serde_json::to_string_pretty(&output::run_json(
+            query, &response,
+        ))?)?;
     } else {
-        println!("{}", response::pretty_body(&response.body));
+        print_line(&response::pretty_body(&response.body))?;
     }
     let view = response::view(&response);
     if !view.ok() {

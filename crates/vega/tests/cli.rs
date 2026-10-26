@@ -928,3 +928,30 @@ fn a_redirect_is_reported_and_the_key_never_reaches_the_target() {
         "the redirect target was contacted"
     );
 }
+
+#[test]
+fn closed_stdout_ends_the_command_quietly() {
+    let cache = seeded_cache(0);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vega"))
+        .args(["--search", ""])
+        .env("XDG_CACHE_HOME", cache.path())
+        .env("XDG_CONFIG_HOME", cache.path().join("config"))
+        .env("VEGA_GRAPHQL_URI", URI)
+        .env_remove("VEGA_GRAPHQL_HEADERS")
+        .env_remove("VEGA_GRAPHQL_KEY_HEADER")
+        .env_remove("VEGA_GRAPHQL_KEY")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Closing the read end before Vega prints is what `| head -1` ends up doing.
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "status: {:?}", output.status);
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
