@@ -1,6 +1,6 @@
 # Accept a single value for a list-typed variable
 
-Status: open (needs a decision)
+Status: done
 Related: 0006 (find public GraphQL servers)
 
 ## Problem
@@ -17,7 +17,11 @@ The GraphQL specification (input coercion for lists) says a value that is not a 
 
 The strict check is intentional today: `crates/vega-core/src/variables.rs` has a test that expects `"x"` for a list to be invalid.
 
-## Decision needed
+## Decision
+
+A single value is wrapped in a list of one, at every list level of the variable's type (not inside input object fields). The generated query shows the wrapped value.
+
+Options considered:
 
 - Accept a single value and wrap it in a list when the item type accepts it (what the spec and servers do), or
 - keep rejecting it, but say how to fix it (`expected a list: write [ ... ]`).

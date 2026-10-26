@@ -111,10 +111,27 @@ fn parse(schema: &Schema, original: &TypeRef, text: &str) -> Result<Value, Strin
         TypeKind::List | TypeKind::InputObject => {
             let value: Value =
                 serde_json::from_str(text.trim()).map_err(|e| format!("not valid JSON: {e}"))?;
+            let value = coerce(original, value);
             validate(schema, original, &value)?;
             Ok(value)
         }
         _ => parse_scalar(schema, ty, text),
+    }
+}
+
+/// Wraps a single value where the type wants a list, as GraphQL input coercion does (a value
+/// that is not a list becomes a list of one item), so the value shown is the value sent.
+fn coerce(ty: &TypeRef, value: Value) -> Value {
+    match (ty.kind, ty.of_type.as_deref()) {
+        (TypeKind::NonNull, Some(inner)) => coerce(inner, value),
+        (TypeKind::List, Some(inner)) => match value {
+            Value::Null => Value::Null,
+            Value::Array(items) => {
+                Value::Array(items.into_iter().map(|item| coerce(inner, item)).collect())
+            }
+            single => Value::Array(vec![coerce(inner, single)]),
+        },
+        _ => value,
     }
 }
 
@@ -294,7 +311,9 @@ mod tests {
         let cases: Vec<(&str, &str, State)> = vec![
             ("ids", r#"["1","2"]"#, State::Value(json!(["1", "2"]))),
             ("ids", "[1, 2]", State::Value(json!([1, 2]))),
-            ("ids", r#""x""#, invalid("expected a list")),
+            ("ids", r#""x""#, State::Value(json!(["x"]))),
+            ("ids", "5", State::Value(json!([5]))),
+            ("ids", "{}", invalid("[0]: expected an ID")),
             ("ids", "[null]", invalid("[0]: must not be null")),
             (
                 "filter",
@@ -356,6 +375,31 @@ mod tests {
         for (def, raw, expected) in cases {
             assert_eq!(state(&schema, def, Some(raw)), expected, "{raw}");
         }
+    }
+
+    #[test]
+    fn a_single_value_becomes_a_list_of_one_at_every_level() {
+        let schema = design_schema();
+        let nested = hand_built(
+            r#"{"kind":"LIST","name":null,"ofType":{"kind":"LIST","name":null,"ofType":{"kind":"SCALAR","name":"Int","ofType":null}}}"#,
+        );
+        let cases = [
+            ("1", json!([[1]])),
+            ("[1,2]", json!([[1], [2]])),
+            ("[[1],[2]]", json!([[1], [2]])),
+            ("null", json!(null)),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                state(&schema, &nested, Some(raw)),
+                State::Value(expected),
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            state(&schema, &nested, Some(r#""x""#)),
+            invalid("[0]: [0]: expected a whole number")
+        );
     }
 
     #[test]
