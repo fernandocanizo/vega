@@ -392,6 +392,10 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App, now: u64) {
             .fg(Color::White)
             .bg(Color::Red)
             .add_modifier(Modifier::BOLD),
+        StatusLevel::Typing => Style::default()
+            .fg(Color::Black)
+            .bg(FOCUS)
+            .add_modifier(Modifier::BOLD),
         StatusLevel::Notice => Style::default()
             .fg(Color::Black)
             .bg(Color::Yellow)

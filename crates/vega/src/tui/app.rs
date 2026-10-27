@@ -90,6 +90,8 @@ pub enum StatusLevel {
     Fresh,
     Stale,
     Notice,
+    /// A search is being typed: magenta like every input being typed in.
+    Typing,
 }
 
 /// Rows a page key moves through in the Results list.
@@ -189,14 +191,12 @@ pub enum Focus {
 }
 
 /// A search in the Details tree (`/`): the cursor jumps to the first row whose label
-/// contains the text; Ctrl-G goes on to the next one.
+/// contains the text; Ctrl-G goes on to the next one, wrapping past the last.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Find {
     pub text: String,
     /// The text is still being typed: every key is part of it.
     pub typing: bool,
-    /// Ctrl-G said there are no more matches; the next press starts over.
-    pub at_end: bool,
 }
 
 /// The first row at or after `from` whose label contains `needle`, ignoring case.
@@ -1178,7 +1178,6 @@ impl App {
             KeyCode::Char(c) if !c.is_control() => find.text.push(c),
             _ => return,
         }
-        find.at_end = false;
         let rows = self.design_rows();
         if let Some(design) = self.design.as_mut() {
             let first = design
@@ -1191,8 +1190,8 @@ impl App {
         }
     }
 
-    /// Ctrl-G: the next match after the cursor. At the last one it says so and stays;
-    /// pressed again it starts over from the first.
+    /// Ctrl-G: the next match after the cursor. Past the last one it warns and wraps
+    /// to the first in the same press.
     fn find_next(&mut self) {
         if self.help_open || self.in_run_mode() || !self.focused(Focus::Details) {
             return;
@@ -1201,23 +1200,17 @@ impl App {
         let Some(design) = self.design.as_mut() else {
             return;
         };
-        let (text, at_end) = match &design.find {
-            Some(find) if !find.text.is_empty() => (find.text.clone(), find.at_end),
+        let text = match &design.find {
+            Some(find) if !find.text.is_empty() => find.text.clone(),
             _ => return,
         };
-        let from = if at_end { 0 } else { design.cursor + 1 };
-        let found = first_match(&rows, &text, from);
-        if let Some(find) = design.find.as_mut() {
-            find.at_end = found.is_none() && first_match(&rows, &text, 0).is_some();
-        }
-        match found {
-            Some(index) => design.cursor = index,
-            None if first_match(&rows, &text, 0).is_none() => {
-                self.notice = Some(format!("No match for \"{text}\""));
-            }
-            None => {
-                self.notice = Some("No more matches · Ctrl-G again starts over".to_string());
-            }
+        if let Some(index) = first_match(&rows, &text, design.cursor + 1) {
+            design.cursor = index;
+        } else if let Some(index) = first_match(&rows, &text, 0) {
+            design.cursor = index;
+            self.notice = Some("No more matches · wrapped to the first".to_string());
+        } else {
+            self.notice = Some(format!("No match for \"{text}\""));
         }
     }
 
@@ -1510,7 +1503,7 @@ impl App {
             let suffix = if missed { " · no match" } else { "" };
             return (
                 format!("Find: {}▏{suffix} · Enter to stop", find.text),
-                StatusLevel::Notice,
+                StatusLevel::Typing,
             );
         }
         if !self.loaded {
@@ -2389,6 +2382,7 @@ mod tests {
         open_me(&mut app);
         press(&mut app, KeyCode::Char('/'));
         assert!(app.status(0).0.starts_with("Find: "), "{}", app.status(0).0);
+        assert_eq!(app.status(0).1, StatusLevel::Typing);
         type_text(&mut app, "n");
         assert_eq!(cursor(&app), 2); // name: String
         type_text(&mut app, "a");
@@ -2459,7 +2453,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_g_goes_to_the_next_match_warns_at_the_end_and_then_starts_over() {
+    fn ctrl_g_goes_to_the_next_match_and_wraps_with_a_warning_past_the_last() {
         let mut app = design_app();
         open_me(&mut app);
         find(&mut app, "user"); // rows 0 and 4
@@ -2470,14 +2464,10 @@ mod tests {
         assert_eq!(cursor(&app), 4);
 
         ctrl(&mut app, 'g');
-        assert_eq!(cursor(&app), 4, "the warning does not move the cursor");
+        assert_eq!(cursor(&app), 0, "the same press wraps to the first");
         let (text, level) = app.status(0);
         assert!(text.contains("No more matches"), "{text}");
         assert_eq!(level, StatusLevel::Notice);
-
-        ctrl(&mut app, 'g');
-        assert_eq!(cursor(&app), 0, "the next press starts over");
-        assert!(!app.status(0).0.contains("No more"));
 
         ctrl(&mut app, 'g');
         assert_eq!(cursor(&app), 4, "and it keeps cycling");
@@ -2495,7 +2485,6 @@ mod tests {
         assert_eq!(cursor(&app), 5);
         ctrl(&mut app, 'g');
         assert!(app.status(0).0.contains("No more matches"));
-        ctrl(&mut app, 'g');
         assert_eq!(cursor(&app), 0);
     }
 
